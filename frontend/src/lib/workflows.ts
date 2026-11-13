@@ -334,6 +334,8 @@ export type WorkflowsInfo = {
   workflows: WorkflowInfo[];
   topic_max_chars: number;
   instructions_max_chars: number;
+  /** The user's Claude may pick highlights (`selection: "external"`): self-host or admins. */
+  external_selection?: boolean;
 };
 
 export function defaultSort(workflow: Workflow): "score" | "timeline" {

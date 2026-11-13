@@ -339,5 +339,17 @@
       "relaxed": "Allowed",
       "question": "A question"
     }
+  },
+  "selection": {
+    "title": "Selection",
+    "auto": {
+      "label": "System AI",
+      "hint": "The server's AI picks the clips"
+    },
+    "external": {
+      "label": "Claude (subscription)",
+      "hint": "Your Claude picks the clips through the local selector",
+      "short": "Claude picks"
+    }
   }
 }

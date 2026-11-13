@@ -802,3 +802,30 @@ describe("remembering settings between videos", () => {
     expect(last.fontFamily).toBe("TikTokSans-Regular");
   });
 });
+
+describe("choosing who picks the clips", () => {
+  it("hides the choice when the server does not allow external selection", async () => {
+    await renderHome();
+    openSettings();
+    expect(screen.queryByRole("tab", { name: /Selection/ })).not.toBeInTheDocument();
+  });
+
+  it("sends selection=external when Claude is chosen", async () => {
+    workflowsResponse = () => Response.json({ ...workflowsInfo, external_selection: true });
+    await renderHome();
+    pasteIntoUrl(LINK);
+    openSection(/Selection/);
+    pick(/Claude \(subscription\)/);
+    expect(settingsChip()).toHaveAccessibleName(/Claude picks/);
+    const body = await submit("Generate clips");
+    expect(body.selection).toBe("external");
+  });
+
+  it("keeps today's request with the system AI", async () => {
+    workflowsResponse = () => Response.json({ ...workflowsInfo, external_selection: true });
+    await renderHome();
+    pasteIntoUrl(LINK);
+    const body = await submit("Generate clips");
+    expect(body).not.toHaveProperty("selection");
+  });
+});

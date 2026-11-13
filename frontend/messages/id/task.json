@@ -281,5 +281,21 @@
       "bumps": "Ada beberapa rintangan di perjalanan. Sedang kami atasi—butuh sedikit waktu lagi.",
       "slower": "Prosesnya sedikit lebih lambat dari biasanya. Kami masih mengerjakannya."
     }
+  },
+  "claudePickingTitle": "Claude sedang memilih klip…",
+  "claudePickingBody": "Claude Anda sedang membaca transkrip. Rendering dimulai begitu klip dikirim.",
+  "claudeSelector": {
+    "starting": {
+      "title": "Menunggu Claude",
+      "body": "Transkrip sudah siap. Pemilih Claude lokal akan mengambil tugas ini sebentar lagi."
+    },
+    "off": {
+      "title": "Pemilih Claude tidak berjalan",
+      "body": "Jalankan di komputer ini dengan `uv run --directory mcp supoclip-claude-selector`; tugas ini akan diambil otomatis."
+    },
+    "stalled": {
+      "title": "Pemilih Claude berhenti",
+      "body": "Pemilih berhenti saat memilih. Jalankan ulang dengan `uv run --directory mcp supoclip-claude-selector`; tugas ini akan dilanjutkan."
+    }
   }
 }

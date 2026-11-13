@@ -78,6 +78,7 @@ def build_task_service() -> TaskService:
     service.cache_repo.get_cache = AsyncMock(return_value=None)
     service.cache_repo.upsert_cache = AsyncMock()
     service.checkpoint_repo.get = AsyncMock(return_value={})
+    service.task_repo.load_source_metadata = AsyncMock(return_value={})
     service.checkpoint_repo.save = AsyncMock()
     service.task_repo.update_task_runtime_metadata = AsyncMock()
     service.task_repo.update_task_status = AsyncMock()

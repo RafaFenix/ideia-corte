@@ -281,5 +281,21 @@
       "bumps": "Alguns solavancos pelo caminho. Estamos resolvendo—só mais um pouquinho de tempo.",
       "slower": "As coisas estão um pouco mais lentas que o normal. Seguimos trabalhando."
     }
+  },
+  "claudePickingTitle": "Claude está escolhendo os cortes…",
+  "claudePickingBody": "Seu Claude está lendo a transcrição. A renderização começa assim que ele enviar os cortes.",
+  "claudeSelector": {
+    "starting": {
+      "title": "Aguardando o Claude",
+      "body": "A transcrição está pronta. O seletor Claude local vai pegar esta task em instantes."
+    },
+    "off": {
+      "title": "O seletor Claude não está rodando",
+      "body": "Inicie neste computador com `uv run --directory mcp supoclip-claude-selector`; ele pega esta task sozinho."
+    },
+    "stalled": {
+      "title": "O seletor Claude parou",
+      "body": "Ele parou no meio da escolha. Reinicie com `uv run --directory mcp supoclip-claude-selector`; esta task será retomada."
+    }
   }
 }

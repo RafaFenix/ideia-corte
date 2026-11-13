@@ -281,5 +281,21 @@
       "bumps": "路上有点小颠簸，我们正在处理，再给我们一点时间。",
       "slower": "这次的节奏比平时慢一点，我们还在继续努力。"
     }
+  },
+  "claudePickingTitle": "Claude 正在挑选片段…",
+  "claudePickingBody": "你的 Claude 正在阅读字幕稿，提交片段后即开始渲染。",
+  "claudeSelector": {
+    "starting": {
+      "title": "等待 Claude",
+      "body": "字幕稿已就绪，本地 Claude 选择器马上会接手此任务。"
+    },
+    "off": {
+      "title": "Claude 选择器未运行",
+      "body": "在这台电脑上用 `uv run --directory mcp supoclip-claude-selector` 启动，它会自动接手此任务。"
+    },
+    "stalled": {
+      "title": "Claude 选择器已停止",
+      "body": "它在挑选过程中停止了。用 `uv run --directory mcp supoclip-claude-selector` 重新启动，此任务会继续。"
+    }
   }
 }

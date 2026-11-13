@@ -339,5 +339,17 @@
       "relaxed": "Diizinkan",
       "question": "Sebuah pertanyaan"
     }
+  },
+  "selection": {
+    "title": "Pemilihan",
+    "auto": {
+      "label": "AI sistem",
+      "hint": "AI server memilih klip"
+    },
+    "external": {
+      "label": "Claude (langganan)",
+      "hint": "Claude Anda memilih klip lewat pemilih lokal",
+      "short": "Claude memilih"
+    }
   }
 }

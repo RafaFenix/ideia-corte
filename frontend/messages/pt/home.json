@@ -339,5 +339,17 @@
       "relaxed": "Permitidos",
       "question": "Uma pergunta"
     }
+  },
+  "selection": {
+    "title": "Seleção",
+    "auto": {
+      "label": "IA do sistema",
+      "hint": "A IA do servidor escolhe os cortes"
+    },
+    "external": {
+      "label": "Claude (assinatura)",
+      "hint": "Seu Claude escolhe os cortes pelo seletor local",
+      "short": "Claude escolhe"
+    }
   }
 }

@@ -12,6 +12,7 @@ const styles: Record<string, string> = {
   queued: "bg-amber-500/10 text-amber-700 dark:text-amber-400",
   error: "bg-red-500/10 text-red-700 dark:text-red-400",
   cancelled: "bg-stone-500/10 text-stone-600 dark:text-stone-400",
+  awaiting_selection: "bg-violet-500/10 text-violet-700 dark:text-violet-400",
 };
 
 export function StatusBadge({ status, className }: { status: string; className?: string }) {
@@ -21,6 +22,7 @@ export function StatusBadge({ status, className }: { status: string; className?:
     : status === "queued" ? t("status.queued")
     : status === "error" ? t("status.failed")
     : status === "cancelled" ? t("status.cancelled")
+    : status === "awaiting_selection" ? t("status.awaitingSelection")
     : status;
   const style = styles[status] ?? "bg-muted text-muted-foreground";
   return <span className={cn("inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium capitalize", style, className)}>

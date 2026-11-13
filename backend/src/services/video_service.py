@@ -12,6 +12,7 @@ import subprocess
 import uuid
 
 from ..utils.async_helpers import run_in_thread
+from ..external_selection import AwaitingSelection
 from ..download_progress import (
     DownloadRecovery,
     ProgressCallback,
@@ -1340,6 +1341,7 @@ class VideoService:
         plan_cache: Optional[PlanCache] = None,
         outline_cache_key: Optional[str] = None,
         cleanup_settings: Optional[Dict[str, Any]] = None,
+        external_selection: bool = False,
     ) -> Dict[str, Any]:
         """
         Complete video processing pipeline.
@@ -1554,6 +1556,10 @@ class VideoService:
             except Exception:
                 logger.warning("Source word timings retained locally for upload retry")
             await run_in_thread(persist_cache_sidecar, video_path)
+
+            if external_selection and not checkpoint.get("analysis"):
+                # The user's MCP client picks the clips; the render resumes on its submission.
+                raise AwaitingSelection()
 
             workflow = workflow_spec.workflow if workflow_spec is not None else "highlights"
             workflow_result: Optional[WorkflowResult] = None

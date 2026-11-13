@@ -28,6 +28,8 @@ By default it talks to the **official hosted SupoClip API** at
 | `supoclip_download_clip` | ✓ | Save a clip's MP4 to disk |
 | `supoclip_export_clip` | ✓ | Re-encode + save with a platform preset (tiktok/reels/shorts) |
 | `supoclip_cancel_task` / `supoclip_resume_task` / `supoclip_delete_task` | ✓ | Manage tasks |
+| `supoclip_get_transcript` | ✓ | Read the timestamped transcript of a `selection="external"` task, paginated |
+| `supoclip_submit_selection` | ✓ | Send the clips you picked; the server validates and renders them |
 
 Tools marked ✓ require an API key (or self-host credentials, see below).
 
@@ -250,6 +252,23 @@ to try instead), `source_too_short`, `no_story`, `recap_unsupported`,
 `analysis_incomplete`, `plan_failed` and `render_incomplete`
 (use `supoclip_resume_task`). Series clips carry `part_number`; every workflow
 clip carries `workflow_role` and `workflow_meta`.
+
+## Picking the clips yourself (`selection="external"`)
+
+Create a highlights task with `selection="external"` and the server's LLM is never
+called, so no LLM key is needed on the server. After download and transcription the
+task stops in `awaiting_selection` (`supoclip_wait_for_task` returns there). Read the
+transcript with `supoclip_get_transcript` (follow `next_offset`; `limits` gives the
+allowed clip length and how many clips render), then call `supoclip_submit_selection`
+with `[{start, end, hook_title?, reasoning?, scores?, respect_bounds?}]`, best first.
+Bounds snap to transcript lines; the accepted clips render through the normal
+pipeline (9:16, captions, hook title). B-roll is skipped. Available on self-hosted
+servers (`SELF_HOST=true`) and to admins.
+
+To have your own Claude subscription do this automatically from the web app, run
+the local selector (`uv run --directory mcp supoclip-claude-selector`); see
+[docs/claude-selector.md](../docs/claude-selector.md). `SUPOCLIP_MCP_TOOLS=a,b`
+limits any MCP server instance to those tools.
 
 ## Example prompts
 

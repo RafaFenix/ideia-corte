@@ -339,5 +339,17 @@
       "relaxed": "允许",
       "question": "一个问题"
     }
+  },
+  "selection": {
+    "title": "选择方式",
+    "auto": {
+      "label": "系统 AI",
+      "hint": "由服务器的 AI 挑选片段"
+    },
+    "external": {
+      "label": "Claude（订阅）",
+      "hint": "由你的 Claude 通过本地选择器挑选片段",
+      "short": "Claude 挑选"
+    }
   }
 }
