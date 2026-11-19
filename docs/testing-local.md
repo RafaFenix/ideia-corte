@@ -85,6 +85,11 @@ Run it after Playwright finishes; browser reseeding would delete its test accoun
 
 ## Other checks
 
+- Local Vitest on Node 26: from `frontend/`, run
+  `NODE_OPTIONS=--no-experimental-webstorage pnpm exec vitest run` (or
+  `NODE_OPTIONS=--no-experimental-webstorage pnpm run test:coverage`). This disables
+  Node's experimental global Web Storage so tests use jsdom's `localStorage`.
+  Without it, editor recovery tests can fail with `localStorage` undefined.
 - Backend: `TEST_DATABASE_URL=postgresql+asyncpg://... backend/.venv/bin/pytest -c backend/pyproject.toml backend/tests -q`
 - Frontend: `pnpm run lint`, `pnpm run typecheck`, `pnpm run test:coverage`, `pnpm run build`.
 - Seeded browser smoke tests: `pnpm run test:e2e`.

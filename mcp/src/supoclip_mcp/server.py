@@ -37,7 +37,7 @@ except ImportError:  # pragma: no cover
     from typing_extensions import Literal  # type: ignore
 
 from .auth import AuthHelp, SupoClipApiKeyVerifier
-from .client import AuthNotConfiguredError, SupoClipClient, SupoClipError
+from .client import AuthNotConfiguredError, SupoClipClient, SupoClipError, SupoClipTimeoutError
 from .config import load_settings
 from .http_app import build_http_app
 from .oauth import build_oauth_routes
@@ -691,37 +691,55 @@ async def supoclip_wait_for_task(
     """
     deadline = time.monotonic() + timeout_seconds
     last: dict = {}
-    while True:
-        last = await _client().request("GET", f"/tasks/{task_id}")
+    while (remaining := deadline - time.monotonic()) > 0:
+        try:
+            # HTTP timeouts limit individual reads; wait_for also bounds a
+            # response that keeps sending bytes without ever finishing.
+            last = await asyncio.wait_for(
+                _client().request("GET", f"/tasks/{task_id}", timeout_seconds=remaining),
+                timeout=remaining,
+            )
+        except (asyncio.TimeoutError, SupoClipTimeoutError):
+            break
         status = str(last.get("status", "unknown"))
         progress = last.get("progress", 0)
-
-        if ctx is not None:
-            try:
-                await ctx.report_progress(
-                    progress=float(progress or 0) / 100.0,
-                    message=f"{status}: {last.get('progress_message', '')}",
-                )
-            except Exception:
-                pass
 
         if status in TERMINAL_STATES:
             return _json(
                 {"status": status, "progress": progress, "timed_out": False, "task": last}
             )
 
-        if time.monotonic() >= deadline:
-            return _json(
-                {
-                    "status": status,
-                    "progress": progress,
-                    "timed_out": True,
-                    "message": f"Still '{status}' after {timeout_seconds}s; poll again later.",
-                    "task": last,
-                }
-            )
+        if ctx is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                await asyncio.wait_for(
+                    ctx.report_progress(
+                        progress=float(progress or 0) / 100.0,
+                        message=f"{status}: {last.get('progress_message', '')}",
+                    ),
+                    timeout=remaining,
+                )
+            except asyncio.TimeoutError:
+                break
+            except Exception:
+                pass
 
-        await asyncio.sleep(poll_interval_seconds)
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            await asyncio.sleep(min(poll_interval_seconds, remaining))
+
+    status = str(last.get("status", "unknown"))
+    return _json(
+        {
+            "status": status,
+            "progress": last.get("progress", 0),
+            "timed_out": True,
+            "message": f"Waiting timed out; last known status is '{status}'. Poll again later.",
+            "task": last,
+        }
+    )
 
 
 @mcp.tool(

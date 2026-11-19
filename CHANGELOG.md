@@ -6,6 +6,7 @@ Add a line here when a pull request changes something a user can see. Use **New*
 
 ## 2026-11-19
 
+- **Fixed:** Agents waiting for a generation now return within the requested wait time, even when a status request stalls, and keep the last known progress so you can poll again. ([Review branch](https://github.com/RafaFenix/ideia-corte/compare/sync%2Fupstream-2026-11-19...feat%2Fupstream-parity))
 - **New:** Give each timeline segment its own framing, with hard cuts between crops. Mix generated layouts and manual framing, keep one aspect ratio for the clip, and export the same framing from the browser or server. ([Review branch](https://github.com/RafaFenix/ideia-corte/compare/feat%2Fmcp-external-selection...feat%2Fsegment-framing))
 
 <!-- Replace the review-branch link with the PR URL when this uncommitted change is submitted. -->
