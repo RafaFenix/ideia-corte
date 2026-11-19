@@ -6,6 +6,7 @@ Add a line here when a pull request changes something a user can see. Use **New*
 
 ## 2026-11-19
 
+- **Under the hood:** The web app and its matching lint configuration now use Next.js 15.5.29. ([Review branch](https://github.com/RafaFenix/ideia-corte/compare/sync%2Fupstream-2026-11-19...feat%2Fupstream-parity))
 - **Fixed:** Uploads whose video length is slow to read now return a clear retry message before the connection times out. MP4 recordings with fragments, including OBS recordings, are measured through their final fragment before checking your minutes and video limit. ([Review branch](https://github.com/RafaFenix/ideia-corte/compare/sync%2Fupstream-2026-11-19...feat%2Fupstream-parity))
 - **Fixed:** Agents waiting for a generation now return within the requested wait time, even when a status request stalls, and keep the last known progress so you can poll again. ([Review branch](https://github.com/RafaFenix/ideia-corte/compare/sync%2Fupstream-2026-11-19...feat%2Fupstream-parity))
 - **New:** Give each timeline segment its own framing, with hard cuts between crops. Mix generated layouts and manual framing, keep one aspect ratio for the clip, and export the same framing from the browser or server. ([Review branch](https://github.com/RafaFenix/ideia-corte/compare/feat%2Fmcp-external-selection...feat%2Fsegment-framing))
