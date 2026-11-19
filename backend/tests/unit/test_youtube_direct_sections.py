@@ -8,6 +8,7 @@ from threading import Thread
 from pathlib import Path
 
 import pytest
+from yt_dlp.utils import LazyList
 
 from src import youtube_proxy as transport
 from src import youtube_source as source
@@ -319,6 +320,90 @@ def test_real_native_direct_transfer_stops_at_budget(direct, monkeypatch, tmp_pa
             transport.download_audio(URL, VIDEO_ID, tmp_path / "audio", budget=budget)
         assert budget.limit < budget.snapshot() <= budget.limit + 64 * 1024
         assert not list(tmp_path.glob("audio.*"))
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_direct_sections_accept_lazy_timings_without_guessing_untimed_ranges(direct):
+    fragments = [{"url": f"https://example.test/{i}", "duration": 10} for i in range(6)]
+    window = transport.select_window({"fragments": LazyList(iter(fragments))}, 20, 30)
+    assert window == ([fragments[2]], 20.0, 30.0)
+    untimed = {"fragments": LazyList([{"url": "https://example.test/audio"}])}
+    assert transport.select_window(untimed, 20, 30) is None
+
+
+@pytest.mark.parametrize("proxy,opt_in", [(PROXY, True), ("", False)])
+def test_lazy_fragment_support_does_not_change_existing_transports(direct, proxy, opt_in):
+    direct.youtube_proxy_url = proxy
+    direct.youtube_sections_direct = opt_in
+    fragments = [{"url": "https://example.test/audio", "duration": 10}]
+    assert transport.resolve_fragments({"fragments": LazyList(fragments)}) is None
+    assert transport.resolve_fragments({"fragments": fragments}) == fragments
+
+
+@pytest.mark.parametrize("limit", [1000, 20])
+def test_real_native_dash_audio_uses_lazy_fragments_and_shared_budget(direct, monkeypatch, tmp_path, limit):
+    payloads = {"/init": b"init-data", "/first": b"a" * 16, "/last": b"b" * 16}
+    requests = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            pass
+
+        def do_GET(self):
+            requests.append(self.path)
+            payload = payloads[self.path]
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}/"
+
+    def metadata(*_args, **_kwargs):
+        return {"duration": 60, "live_status": "was_live", "formats": [
+            {"format_id": "140", "protocol": "http_dash_segments", "vcodec": "none",
+             "acodec": "aac", "abr": 128, "ext": "m4a", "url": base,
+             "fragment_base_url": base,
+             "fragments": LazyList({"path": name.lstrip("/")} for name in payloads)},
+        ]}
+
+    original_options = transport.base_proxy_params
+
+    def options(*args, **kwargs):
+        # This exercises the HTTP/DASH transport with dummy bytes, not AAC muxing.
+        return dict(original_options(*args, **kwargs), fixup="never", noprogress=True)
+
+    monkeypatch.setattr(transport, "extract_video_info", metadata)
+    monkeypatch.setattr(transport, "base_proxy_params", options)
+    budget = transport.ByteBudget(limit)
+    try:
+        def download():
+            return source.download_analysis_source(
+                URL, VIDEO_ID, budget=budget, duration=60,
+                download_full=lambda: pytest.fail("DASH audio must not fetch a full video"),
+            )
+
+        if limit == 1000:
+            audio, audio_first = download()
+            assert audio_first and audio.read_bytes() == b"".join(payloads.values())
+            assert requests == list(payloads)
+            before = budget.snapshot()
+            assert before == sum(map(len, payloads.values()))
+            assert source.download_audio_for_job(URL, VIDEO_ID, budget=budget) == audio
+            assert budget.snapshot() == before and requests == list(payloads)
+        else:
+            with pytest.raises(transport.DownloadBudgetExceeded, match="20 byte job limit"):
+                download()
+            assert requests == ["/init", "/first"]
+            assert budget.snapshot() == 25
+            assert not list(tmp_path.rglob("*.part*"))
+            assert not list(tmp_path.rglob("audio-original-v2.*"))
     finally:
         server.shutdown()
         server.server_close()

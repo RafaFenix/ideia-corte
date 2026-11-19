@@ -57,6 +57,11 @@ padding, timeline mapping, and remote cache publication as the proxy transport.
 Metadata and media use yt-dlp's native client with the proxy explicitly disabled.
 `--download-sections` is never used.
 
+Recorded livestream audio can expose DASH fragments as a yt-dlp `LazyList`.
+Direct mode passes those fragments to the native downloader under the same
+byte limit. Section selection also accepts lazy fragment lists when they carry
+real timings; lists without timings still use bounded full-file recovery.
+
 The shared `YOUTUBE_DOWNLOAD_MAX_BYTES` allowance (default 2 GB) covers audio,
 playlist bytes, selected sections and full-file recovery, including failed
 attempts. Reusing the cache adds no downloaded media bytes. For sources that

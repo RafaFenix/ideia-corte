@@ -956,6 +956,11 @@ def resolve_fragments(fmt: dict) -> Optional[list]:
         except Exception as exc:
             logger.info("Could not expand media fragments: %s", redact_secrets(str(exc)))
             return None
+    if not isinstance(fragments, list) and direct_sections_enabled():
+        from yt_dlp.utils import LazyList
+
+        if isinstance(fragments, LazyList):
+            fragments = list(fragments)
     if not isinstance(fragments, list) or not fragments:
         return None
     return fragments
@@ -1196,6 +1201,13 @@ def native_download_format(
         "fragment_base_url": fmt.get("fragment_base_url"),
         "extra_param_to_segment_url": fmt.get("extra_param_to_segment_url"),
     }
+    if (fragments is None and direct_sections_enabled()
+            and info["protocol"] == "http_dash_segments"):
+        # Recorded livestream audio can be a LazyList with no time metadata.
+        # Preserve it for DashSegmentsFD; audio needs every fragment, not a cut.
+        fragments = fmt.get("fragments")
+        if fragments is None:
+            raise PartialDownloadUnavailable("DASH audio has no fragment list")
     if fragments is not None:
         info["fragments"] = fragments
         protocol = fmt.get("protocol") or ""
