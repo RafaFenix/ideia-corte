@@ -21,6 +21,7 @@ from ..media.render_ranges import burned_hook_title
 from ..editor_document import (
     CaptionStyle,
     EditDocument,
+    effective_framing,
     atomic_json,
     editor_dir,
     render_document,
@@ -473,6 +474,7 @@ def upgrade_document(
         captions.setdefault("uppercase", bool(template.get("uppercase")))
     return {
         **document,
+        "segments": [{**s, "framing": s.get("framing")} for s in document["segments"]],
         "captions": captions,
         "hookTitle": document.get("hookTitle", (burned_hook_title(clip) or "")[:200]),
         # Drafts saved before the editor had B-roll pick up the generated clip's.
@@ -946,6 +948,10 @@ async def export_editor(ctx, task_id: str, clip_id: str, filename: str, job_id: 
                 has_layout=bool(session["asset"].get("hasLayout")),
                 version=session["asset"].get("mediaVersion"),
             )
+            if (session["asset"].get("hasLayout") and document.framing.aspect == "vertical"
+                    and any(effective_framing(document, s).fit == "auto" for s in document.segments)
+                    and not (directory / "layout.mp4").exists()):
+                raise ValueError("The generated layout is unavailable. Prepare the editing copy again.")
             broll_files = await document_footage(document)
             await run_in_thread(
                 render_document,
@@ -1036,6 +1042,8 @@ async def combine_editor(ctx, task_id: str, clip_id: str, filename: str, job_id:
             )
             commands += ["-i", str(source_dir / "clean.mp4")]
             document = EditDocument.model_validate(entry["document"])
+            if any(s.framing is not None for s in document.segments):
+                raise ValueError("Combining personalized framing is not available yet")
             # Each draft's B-roll stays editable in the combined clip.
             all_broll += rebased_broll(document, cursor)
             entry_words = [

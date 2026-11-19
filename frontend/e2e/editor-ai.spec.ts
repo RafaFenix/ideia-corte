@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import type { AIEditUsage, EditDocument } from "../src/lib/editor/document";
+import { normalizeFraming } from "../src/lib/editor/document";
 import { draft } from "../src/lib/editor/document.test-fixture";
 
 const mediaPath = path.resolve("test-results/ai-clean.mp4");
@@ -150,12 +151,12 @@ test("an AI edit is applied as one undoable change", async ({ page }) => {
   expect(requests[0]).toMatchObject({ instruction: "make captions uppercase and cut the intro", basis: "clip1.mp4" });
   expect(typeof requests[0].playhead).toBe("number");
   await expect.poll(() => saved().document.captions.uppercase).toBe(true);
-  expect(saved().document.segments).toEqual([{ id: "s", start: 1, end: 3 }]);
+  expect(saved().document.segments).toEqual([{ id: "s", start: 1, end: 3, framing: null }]);
   await page.screenshot({ path: "test-results/editor-ai-result.png" });
 
   await page.getByRole("button", { name: "Undo", exact: true }).last().click();
   await expect.poll(() => saved().document.captions.uppercase).toBeFalsy();
-  expect(saved().document.segments).toEqual(draft.segments);
+  expect(saved().document.segments).toEqual(normalizeFraming(draft).segments);
 });
 
 test("edits made while the AI works are never overwritten", async ({ page }) => {

@@ -1,6 +1,7 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { useEditor } from "./use-editor";
+import { normalizeFraming, setFraming } from "@/lib/editor/document";
 import { draft } from "@/lib/editor/document.test-fixture";
 
 afterEach(() => vi.unstubAllGlobals());
@@ -244,4 +245,25 @@ it("rebuilds the editing copy with the revision it shows and loads the fresh dra
   expect(result.current.status).toBe("All changes saved");
   expect(result.current.canUndo).toBe(false);
   expect(JSON.parse(storage.get("supoclip-editor:/test/editor")!).history.present.volume).toBe(0.75);
+});
+
+
+it("normalizes missing segment framing in all cached snapshots without a phantom save", async () => {
+  const { requests } = cachedEditor(draft, 0, 1);
+  const { result } = renderHook(() => useEditor("/test/editor"));
+  await waitFor(() => expect(result.current.document).not.toBeNull());
+  expect(result.current.document).toEqual(normalizeFraming({ ...draft, broll: generated }));
+  await act(async () => result.current.save());
+  expect(requests).toHaveLength(0);
+  // An AI result or restored draft may omit optional fields, too.
+  act(() => result.current.update(d => ({ ...d, segments: draft.segments })));
+  await act(async () => result.current.save());
+  expect(requests).toHaveLength(0);
+  const id = draft.segments[0].id;
+  act(() => result.current.update(d => setFraming(d, id, "segment", { x: .1 })));
+  expect(result.current.document?.segments[0].framing?.x).toBe(.1);
+  act(() => result.current.undo());
+  expect(result.current.document?.segments[0].framing).toBeNull();
+  act(() => result.current.redo());
+  expect(result.current.document?.segments[0].framing?.x).toBe(.1);
 });

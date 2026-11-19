@@ -33,6 +33,25 @@ Shortcuts: Space plays/pauses; arrows step frames; Shift+arrows jump one second;
 I/O set boundaries; S splits; Ctrl/Cmd+Z undoes; Ctrl/Cmd+Shift+Z redoes;
 Ctrl/Cmd+S saves. Shortcuts are inactive in text fields and dialogs.
 
+## Framing by segment
+
+Split at the playhead, select a segment, then open **Framing**. **Apply to this
+segment** changes only that occurrence; an unmodified segment inherits the clip's
+framing. The crop badge marks personalized segments. **Use clip framing** removes
+an override. **Apply to the whole clip** replaces all personalized framing on the
+next adjustment; undo restores it. Aspect ratio always applies to the whole clip.
+
+Framing changes are hard cuts, with no added time or audio fade. Preview, server
+export and browser export use the same intervals. Auto uses the generated layout;
+Fill/Fit use the editing source, so Auto and manual segments can coexist. A split
+or stacked composition already baked into that source can only be repositioned
+as a whole. Combining drafts with personalized framing and AI Keep ranges are
+unavailable in this first version; ordinary cuts retain their framing.
+
+Old drafts inherit their global framing without a database migration or a revision
+increment on load. Update API, workers and frontend together: older binaries do
+not understand segment overrides.
+
 ## Export
 
 The export dialog shows dimensions, edited duration, audio state, and approximate

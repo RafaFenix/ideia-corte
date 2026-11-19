@@ -2,6 +2,7 @@ export interface Segment {
   id: string;
   start: number;
   end: number;
+  framing?: SegmentFraming | null;
 }
 export interface CaptionWord {
   id: string;
@@ -49,6 +50,41 @@ export interface Framing {
   zoom: number;
   x: number;
   y: number;
+}
+export type SegmentFraming = Omit<Framing, "aspect">;
+export type FramingScope = "segment" | "clip";
+/** Missing on legacy drafts means inheritance, including in undo snapshots. */
+export function normalizeFraming(doc: EditDocument): EditDocument {
+  return { ...doc, segments: doc.segments.map(s => ({ ...s, framing: s.framing ?? null })) };
+}
+export function effectiveFraming(doc: EditDocument, segment: Segment): Framing {
+  return { ...doc.framing, ...segment.framing, aspect: doc.framing.aspect };
+}
+export const framingSource = (frame: Framing, hasLayout = false): "clean" | "layout" =>
+  hasLayout && frame.aspect === "vertical" && frame.fit === "auto" ? "layout" : "clean";
+export function setFraming(doc: EditDocument, id: string, scope: FramingScope, patch: Partial<SegmentFraming>): EditDocument {
+  if (scope === "clip") return {
+    ...doc, framing: { ...doc.framing, ...patch },
+    segments: doc.segments.map(s => ({ ...s, framing: null })),
+  };
+  return { ...doc, segments: doc.segments.map(s => {
+    if (s.id !== id) return s;
+    const { fit, zoom, x, y } = effectiveFraming(doc, s);
+    return { ...s, framing: { fit, zoom, x, y, ...patch } };
+  }) };
+}
+/** Only picture decoding coalesces equal crops; caption IDs still use source continuity. */
+export function visualSegments(doc: EditDocument): Segment[] {
+  const result: Segment[] = [];
+  for (const segment of doc.segments) {
+    const previous = result.at(-1);
+    const a = previous && effectiveFraming(doc, previous), b = effectiveFraming(doc, segment);
+    if (previous && Math.abs(previous.end - segment.start) < 1e-9 && a &&
+      a.fit === b.fit && a.zoom === b.zoom && a.x === b.x && a.y === b.y)
+      previous.end = segment.end;
+    else result.push({ ...segment });
+  }
+  return result;
 }
 export interface Effects {
   brightness: number;
@@ -338,7 +374,7 @@ export function splitSegment(
     index,
     1,
     { ...segment, end: at },
-    { id: uid(), start: at, end: segment.end },
+    { ...segment, id: uid(), start: at, end: segment.end, framing: segment.framing ? { ...segment.framing } : null },
   );
   return { ...doc, segments };
 }

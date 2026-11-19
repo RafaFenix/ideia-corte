@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiRequestError, parseApiError } from "@/lib/api-error";
-import { remapCaptionTransforms, type EditDocument, type EditorState } from "@/lib/editor/document";
+import { normalizeFraming, remapCaptionTransforms, type EditDocument, type EditorState } from "@/lib/editor/document";
 import { draftCacheKey, readDraft, removeDraft, writeDraft } from "@/lib/editor/draft-cache";
 
 export async function editorRequest<T>(
@@ -34,7 +34,7 @@ interface History {
 function upgradeCachedHistory(history: History, server: EditDocument): History {
   const upgrade = (document: EditDocument): EditDocument => ({
     ...server,
-    ...document,
+    ...normalizeFraming(document),
     // Missing means this cache predates editable B-roll; [] is an intentional removal.
     broll: structuredClone(document.broll ?? server.broll ?? []),
     ...(document.hookTiming !== undefined || server.hookTiming !== undefined
@@ -93,7 +93,7 @@ export function useEditor(endpoint: string) {
     (change: (doc: EditDocument) => EditDocument, group = "") => {
       const current = historyRef.current;
       if (!current) return;
-      const changed = change(current.present);
+      const changed = normalizeFraming(change(current.present));
       const next = changed.words !== current.present.words || changed.captions.wordsPerLine !== current.present.captions.wordsPerLine
         ? remapCaptionTransforms(current.present, changed) : changed;
       if (JSON.stringify(next) === JSON.stringify(current.present)) return;
@@ -197,6 +197,8 @@ export function useEditor(endpoint: string) {
           setError(state.error || "Preview preparation failed");
           return;
         }
+        state.draft.document = normalizeFraming(state.draft.document);
+        state.original = normalizeFraming(state.original);
         assetRef.current = state;
         revision.current = state.draft.revision;
         saved.current = JSON.stringify(state.draft.document);
@@ -274,6 +276,8 @@ export function useEditor(endpoint: string) {
     if (inFlight.current) await inFlight.current.catch(() => {});
     const state = await editorRequest<EditorState>(endpoint);
     if (state.status !== "ready") throw new Error("Preview is not ready");
+    state.draft.document = normalizeFraming(state.draft.document);
+    state.original = normalizeFraming(state.original);
     revision.current = state.draft.revision;
     saved.current = JSON.stringify(state.draft.document);
     assetRef.current = state;

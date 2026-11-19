@@ -126,7 +126,18 @@
     "center": "Pusatkan subjek",
     "landscapeHint": "Klip ini berisi detail yang melebar. Versi lanskap menjaga detail tetap terbaca tanpa memotong konten.",
     "useLandscape": "Gunakan versi lanskap",
-    "autoLayout": "Tata letak hasil pembuatan"
+    "autoLayout": "Tata letak hasil pembuatan",
+    "scope": "Terapkan pembingkaian",
+    "thisSegment": "Terapkan ke segmen ini",
+    "wholeClip": "Terapkan ke seluruh klip",
+    "replaceAll": "Mengganti pembingkaian khusus di semua segmen.",
+    "custom": "Pembingkaian khusus",
+    "inherited": "Mengikuti pembingkaian klip",
+    "inherit": "Gunakan pembingkaian klip",
+    "clipAspect": "Rasio aspek klip",
+    "autoHelp": "Otomatis menyesuaikan komposisi yang dibuat. Pilih Isi atau Sesuaikan untuk memulihkan area di luar potongan otomatis. Komposisi terbagi atau bertumpuk hanya dapat dipindahkan secara keseluruhan.",
+    "loadingLayout": "Menyiapkan tata letak…",
+    "combineBlocked": "Penggabungan pembingkaian khusus belum tersedia. Ekspor atau gunakan pembingkaian klip."
   },
   "audioPanel": {
     "title": "Audio",

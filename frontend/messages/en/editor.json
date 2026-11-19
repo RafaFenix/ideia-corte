@@ -126,7 +126,18 @@
     "center": "Center subject",
     "landscapeHint": "This clip contains wide detail. A landscape version keeps it readable without cropping content.",
     "useLandscape": "Use landscape version",
-    "autoLayout": "Generated layout"
+    "autoLayout": "Generated layout",
+    "scope": "Apply framing",
+    "thisSegment": "Apply to this segment",
+    "wholeClip": "Apply to the whole clip",
+    "replaceAll": "Replaces personalized framing on every segment.",
+    "custom": "Personalized framing",
+    "inherited": "Inheriting clip framing",
+    "inherit": "Use clip framing",
+    "clipAspect": "Clip aspect ratio",
+    "autoHelp": "Auto adjusts the generated composition. Choose Fill frame or Fit to recover areas outside the automatic crop. Split or stacked compositions can only be repositioned as a whole.",
+    "loadingLayout": "Preparing generated layout…",
+    "combineBlocked": "Combining personalized framing is not available yet. Export or use clip framing first."
   },
   "audioPanel": {
     "title": "Audio",

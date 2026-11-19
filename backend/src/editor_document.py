@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Annotated, Literal
 import hashlib
 import json
+import math
 import os
 import subprocess
 import time
@@ -28,10 +29,18 @@ class Model(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
 
+class SegmentFraming(Model):
+    fit: Literal["contain", "cover", "auto"]
+    zoom: float = Field(ge=1, le=3)
+    x: float = Field(ge=0, le=1)
+    y: float = Field(ge=0, le=1)
+
+
 class Segment(Model):
     id: str = Field(min_length=1, max_length=100)
     start: float = Field(ge=0)
     end: float = Field(gt=0)
+    framing: SegmentFraming | None = None
 
     @model_validator(mode="after")
     def ordered(self):
@@ -257,6 +266,20 @@ def continuous_segments(segments: list[Segment]) -> list[Segment]:
     return result
 
 
+def effective_framing(document: EditDocument, segment: Segment) -> Framing:
+    return document.framing.model_copy(update=segment.framing.model_dump()) if segment.framing else document.framing
+
+
+def visual_segments(document: EditDocument) -> list[Segment]:
+    result = []
+    for segment in document.segments:
+        if result and abs(result[-1].end - segment.start) < TIME_EPSILON and effective_framing(document, result[-1]) == effective_framing(document, segment):
+            result[-1] = result[-1].model_copy(update={"end": segment.end})
+        else:
+            result.append(segment)
+    return result
+
+
 def caption_key(document: EditDocument, words: list[dict]) -> str:
     cursor = 0.0
     segment = document.segments[-1]
@@ -460,22 +483,17 @@ def render_document(
     from .media.broll_overlay import broll_input_args, broll_overlay_graph, normalize_broll_overlays
     from .video_utils import ass_fonts_dir
 
-    # A split without a source-time jump is one continuous picture. Render it
-    # as such so a split inside a dissolve cannot reset its opacity or discard
-    # a sub-frame B-roll fragment. Keep the editable draft and its IDs intact.
-    document = document.model_copy(update={"segments": continuous_segments(document.segments)})
-
-    source = directory / ("layout.mp4" if document.framing.fit == "auto" and document.framing.aspect == "vertical" and (directory / "layout.mp4").exists() else "clean.mp4")
-    sw, sh = _ffprobe_size(source)
-    width, height = output_size(document, sw, sh)
-    framing, fx = document.framing, document.effects
-    scale = (max if framing.fit == "cover" else min)(
-        width / sw, height / sh
-    ) * framing.zoom
-    rw, rh = max(2, round(sw * scale / 2) * 2), max(2, round(sh * scale / 2) * 2)
-    # Crop overflow and position letterboxing using the same normalized anchor.
-    cw, ch = min(width, rw), min(height, rh)
-    geometry = f"scale={rw}:{rh},crop={cw}:{ch}:{(rw - cw) * framing.x}:{(rh - ch) * framing.y},pad={width}:{height}:{(width - cw) * framing.x}:{(height - ch) * framing.y}:black,setsar=1"
+    # Picture cuts and source-continuous text/B-roll have different boundaries.
+    timing_document = document.model_copy(update={"segments": continuous_segments(document.segments)})
+    runs = visual_segments(document)
+    sources = [directory / "clean.mp4"]
+    has_layout = (directory / "layout.mp4").exists()
+    use_layout = [has_layout and effective_framing(document, s).fit == "auto" and document.framing.aspect == "vertical" for s in runs]
+    if any(use_layout):
+        sources.append(directory / "layout.mp4")
+    dimensions = [_ffprobe_size(source) for source in sources]
+    width, height = output_size(document, *dimensions[0])
+    fx = document.effects
     # CSS brightness/contrast use RGB multiplication followed by a midpoint shift.
     gain = fx.brightness / 100 * fx.contrast / 100
     offset = 128 * (1 - fx.contrast / 100)
@@ -493,7 +511,7 @@ def render_document(
             "stream=index",
             "-of",
             "csv=p=0",
-            str(source),
+            str(sources[0]),
         ],
         capture_output=True,
         text=True,
@@ -501,21 +519,37 @@ def render_document(
     )
     audio = bool(probe.stdout.strip())
     filters, joins = [], []
-    for index, segment in enumerate(document.segments):
-        filters.append(
-            f"[0:v]trim=start={segment.start}:end={segment.end},setpts=PTS-STARTPTS[v{index}]"
-        )
-        joins.append(f"[v{index}]")
-        if audio:
-            filters.append(
-                f"[0:a]atrim=start={segment.start}:end={segment.end},asetpts=PTS-STARTPTS[a{index}]"
-            )
-            joins.append(f"[a{index}]")
-    filters.append(
-        "".join(joins)
-        + f"concat=n={len(document.segments)}:v=1:a={int(audio)}[video]"
-        + ("[audio]" if audio else "")
-    )
+    filters.append(f"[{len(sources)}:a]asplit={len(runs)}" + "".join(f"[clocksrc{i}]" for i in range(len(runs))))
+    for source_index in range(len(sources)):
+        indices = [i for i, layout in enumerate(use_layout) if int(layout) == source_index]
+        if indices:
+            filters.append(f"[{source_index}:v]split={len(indices)}" + "".join(f"[src{i}]" for i in indices))
+    cursor = 0.0
+    for index, segment in enumerate(runs):
+        # Allocate on the output frame grid, rather than rounding every short
+        # segment independently and accumulating drift against audio/captions.
+        end = cursor + segment.end - segment.start
+        frames = math.ceil(end * 30 - TIME_EPSILON) - math.ceil(cursor * 30 - TIME_EPSILON)
+        cursor = end
+        sw, sh = dimensions[int(use_layout[index])]
+        frame = effective_framing(document, segment)
+        scale = (max if frame.fit == "cover" else min)(width / sw, height / sh) * frame.zoom
+        rw, rh = max(2, round(sw * scale / 2) * 2), max(2, round(sh * scale / 2) * 2)
+        cw, ch = min(width, rw), min(height, rh)
+        geometry = f"scale={rw}:{rh},crop={cw}:{ch}:{(rw - cw) * frame.x}:{(rh - ch) * frame.y},pad={width}:{height}:{(width - cw) * frame.x}:{(height - ch) * frame.y}:black,setsar=1"
+        filters.append(f"[src{index}]trim=start={segment.start}:end={segment.end},setpts=PTS-STARTPTS,{geometry},tpad=stop_mode=clone:stop_duration=0.1,fps=30,trim=end_frame={frames},settb=AVTB[v{index}]")
+        # concat cannot infer a one-frame video segment's end timestamp.
+        # A discarded silent clock fixes its length to the output frame grid.
+        filters.append(f"[clocksrc{index}]atrim=duration={frames / 30:.9f},asetpts=PTS-STARTPTS[clock{index}]")
+        joins.append(f"[v{index}][clock{index}]")
+    filters.append("".join(joins) + f"concat=n={len(runs)}:v=1:a=1[video][clock]")
+    filters.append("[clock]anullsink")
+    if audio:
+        segments = timing_document.segments
+        filters.append(f"[0:a]asplit={len(segments)}" + "".join(f"[asrc{i}]" for i in range(len(segments))))
+        for index, segment in enumerate(segments):
+            filters.append(f"[asrc{index}]atrim=start={segment.start}:end={segment.end},asetpts=PTS-STARTPTS[a{index}]")
+        filters.append("".join(f"[a{i}]" for i in range(len(segments))) + f"concat=n={len(segments)}:v=0:a=1[audio]")
     ass = directory / f"captions-{job_id}.ass"
     write_ass(ass, document, width, height)
     fonts = ass_fonts_dir(document.captions.font)
@@ -524,7 +558,7 @@ def render_document(
     overlays = normalize_broll_overlays(
         [
             {**piece, "path": broll_files[piece["footage"].key]}
-            for piece in mapped_broll(document)
+            for piece in mapped_broll(timing_document)
             if broll_files and piece["footage"].key in broll_files
         ],
         total,
@@ -533,12 +567,12 @@ def render_document(
     if overlays:
         # Footage fills the output frame over the framed, graded picture and
         # under the captions, as in the preview.
-        filters.append(f"[video]{geometry},{effects}[framed]")
-        graph, label = broll_overlay_graph("[framed]", overlays, width, height)
+        filters.append(f"[video]{effects}[framed]")
+        graph, label = broll_overlay_graph("[framed]", overlays, width, height, first_input=len(sources) + 1)
         filters.append(graph)
         filters.append(f"{label}{subtitles}[outv]")
     else:
-        filters.append(f"[video]{geometry},{effects},{subtitles}[outv]")
+        filters.append(f"[video]{effects},{subtitles}[outv]")
     # Mixed source/stock frame rates must not make ffmpeg duplicate tail frames.
     filters.append("[outv]fps=30[finalv]")
     if audio:
@@ -550,8 +584,8 @@ def render_document(
     command = [
         "ffmpeg",
         "-y",
-        "-i",
-        str(source),
+        *[arg for source in sources for arg in ("-i", str(source))],
+        "-f", "lavfi", "-t", str(total + 1 / 30), "-i", "anullsrc=r=48000:cl=mono",
         *broll_input_args(overlays),
         "-filter_complex",
         ";".join(filters),

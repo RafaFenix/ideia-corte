@@ -33,6 +33,11 @@ import {
   footageKey,
   footageUrl,
   frameRect,
+  effectiveFraming,
+  framingSource,
+  setFraming,
+  type FramingScope,
+  type Framing,
   outputSize,
   outputTime,
   timecode,
@@ -53,6 +58,7 @@ interface Props {
   asset: EditorState;
   endpoint: string;
   segmentIndex: number;
+  framingScope: FramingScope;
   select: (index: number) => void;
   time: number;
   onTime: (time: number) => void;
@@ -69,6 +75,7 @@ export function Preview({
   asset,
   endpoint,
   segmentIndex,
+  framingScope,
   select,
   time,
   onTime,
@@ -86,6 +93,10 @@ export function Preview({
   const canvasRef = useRef<HTMLCanvasElement>(null),
     audioRef = useRef<{ context: AudioContext; gain: GainNode } | null>(null);
   // One hidden, muted player per stock video, kept in step with the clip.
+  const layoutRef = useRef<HTMLVideoElement>(null);
+  const resumeLayout = useRef(false);
+  const [layoutWaiting, setLayoutWaiting] = useState(false);
+  const needsLayout = doc.segments.some(s => framingSource(effectiveFraming(doc, s), asset.hasLayout) === "layout");
   const brollPlayers = useRef(new Map<string, HTMLVideoElement>());
   const footage = [
     ...new Map(brollOf(doc).map((b) => [footageKey(b.footage), b.footage])).entries(),
@@ -101,6 +112,12 @@ export function Preview({
     y: number;
     startX: number;
     startY: number;
+    id: string;
+    scope: FramingScope;
+    frame: Framing;
+    sourceWidth: number;
+    sourceHeight: number;
+    group: string;
   } | null>(null);
   const size = outputSize(doc, asset.width, asset.height);
   const resolution = usePreviewResolution(pictureRef, size);
@@ -121,6 +138,7 @@ export function Preview({
   const play = useCallback(async () => {
     const video = videoRef.current;
     if (!video) return;
+    if (resumeLayout.current) { resumeLayout.current = false; setLayoutWaiting(false); return; }
     if (!video.paused) {
       video.pause();
       return;
@@ -158,6 +176,7 @@ export function Preview({
   useEffect(() => {
     const video = videoRef.current;
     if (video) {
+      resumeLayout.current = false;
       video.currentTime = seekRequest.time;
       onTime(seekRequest.time);
     }
@@ -174,20 +193,48 @@ export function Preview({
       const canvas = canvasRef.current,
         video = videoRef.current;
       if (canvas && video && video.readyState >= 2) {
-        const segment = doc.segments[segmentIndex] ?? doc.segments[0];
+        let activeIndex = segmentIndex;
+        let segment = doc.segments[activeIndex] ?? doc.segments[0];
         if (!video.paused && video.currentTime >= segment.end - 0.012) {
           const next = segmentIndex + 1;
           if (next < doc.segments.length) {
-            video.currentTime = doc.segments[next].start;
+            if (Math.abs(segment.end - doc.segments[next].start) > 0.001) video.currentTime = doc.segments[next].start;
+            activeIndex = next;
+            segment = doc.segments[next];
             select(next);
           } else if (loop) {
             video.currentTime = doc.segments[0].start;
+            activeIndex = 0;
+            segment = doc.segments[0];
             select(0);
           } else {
             video.pause();
             video.currentTime = segment.end;
           }
         }
+        const framing = effectiveFraming(doc, segment);
+        const layout = layoutRef.current;
+        const useLayout = framingSource(framing, asset.hasLayout) === "layout";
+        if (layout) {
+          layout.playbackRate = video.playbackRate;
+          if (!layout.seeking && Math.abs(layout.currentTime - video.currentTime) > 0.06) layout.currentTime = video.currentTime;
+          const waiting = layout.readyState < 2 || layout.seeking || Math.abs(layout.currentTime - video.currentTime) > 0.06;
+          if (useLayout && waiting) {
+            if (!video.paused) { resumeLayout.current = true; video.pause(); }
+            setLayoutWaiting(true);
+            frame = requestAnimationFrame(draw);
+            return;
+          }
+          setLayoutWaiting(false);
+          if (resumeLayout.current) { resumeLayout.current = false; void video.play().catch(() => setMediaError(true)); }
+          if (!video.paused && layout.paused) void layout.play().catch(() => setMediaError(true));
+          if (video.paused && !layout.paused) layout.pause();
+        }
+        if (!layout) {
+          setLayoutWaiting(false);
+          if (resumeLayout.current) { resumeLayout.current = false; void video.play().catch(() => setMediaError(true)); }
+        }
+        const picture = useLayout && layout ? layout : video;
         const context = canvas.getContext("2d");
         const sourceTime = video.currentTime,
           active = brollAt(doc, sourceTime),
@@ -217,18 +264,19 @@ export function Preview({
           drawEditorFrame(
             context,
             doc,
-            video.videoWidth || asset.width,
-            video.videoHeight || asset.height,
+            picture.videoWidth || asset.width,
+            picture.videoHeight || asset.height,
             outputTime(
               doc,
-              Math.min(segmentIndex, doc.segments.length - 1),
+              Math.min(activeIndex, doc.segments.length - 1),
               video.currentTime,
             ),
             (rect) =>
-              context.drawImage(video, rect.x, rect.y, rect.width, rect.height),
+              context.drawImage(picture, rect.x, rect.y, rect.width, rect.height),
             asset.captionLooks,
             layer,
             "none",
+            framing,
           );
       }
       frame = requestAnimationFrame(draw);
@@ -236,6 +284,7 @@ export function Preview({
     frame = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(frame);
   }, [
+    asset.hasLayout,
     asset.captionLooks,
     asset.height,
     asset.width,
@@ -248,6 +297,7 @@ export function Preview({
   const step = (direction: number) => {
     const video = videoRef.current;
     if (!video) return;
+    resumeLayout.current = false;
     video.pause();
     video.currentTime = clamp(
       video.currentTime + direction / asset.fps,
@@ -307,7 +357,7 @@ export function Preview({
           <video
             ref={videoRef}
             crossOrigin="anonymous"
-            src={`${endpoint}/media/${asset.hasLayout && doc.framing.fit === "auto" && doc.framing.aspect === "vertical" ? "layout" : "clean"}.mp4`}
+            src={`${endpoint}/media/clean.mp4`}
             preload="auto"
             playsInline
             className="hidden"
@@ -332,6 +382,8 @@ export function Preview({
             }}
             onError={() => setMediaError(true)}
           />
+          {needsLayout && <video ref={layoutRef} src={`${endpoint}/media/layout.mp4`} crossOrigin="anonymous" preload="auto" muted playsInline className="hidden" onError={() => setMediaError(true)} />}
+          {layoutWaiting && <span role="status" className="absolute inset-x-0 top-2 z-10 text-center text-xs text-white">{t("framing.loadingLayout")}</span>}
           {footage.map(([key, item]) => (
             <video
               key={key}
@@ -355,11 +407,20 @@ export function Preview({
             className={`block h-full w-full touch-none ${tab === "framing" ? "cursor-move" : "cursor-default"}`}
             onPointerDown={(e) => {
               if (tab !== "framing") return;
+              const segment = doc.segments[segmentIndex];
+              const frame = framingScope === "clip" ? doc.framing : effectiveFraming(doc, segment);
+              const picture = framingSource(frame, asset.hasLayout) === "layout" ? layoutRef.current : videoRef.current;
+              videoRef.current?.pause();
+              resumeLayout.current = false;
               drag.current = {
+                id: segment.id, scope: framingScope, frame,
+                sourceWidth: picture?.videoWidth || asset.width,
+                sourceHeight: picture?.videoHeight || asset.height,
+                group: `gesture:framing:${framingScope}:${segment.id}:${Date.now()}`,
                 x: e.clientX,
                 y: e.clientY,
-                startX: doc.framing.x,
-                startY: doc.framing.y,
+                startX: frame.x,
+                startY: frame.y,
               };
               e.currentTarget.setPointerCapture(e.pointerId);
             }}
@@ -369,9 +430,9 @@ export function Preview({
                 deltaX = e.clientX - drag.current.x,
                 deltaY = e.clientY - drag.current.y;
                 const rect = frameRect(
-                  doc.framing,
-                  asset.width,
-                  asset.height,
+                  drag.current.frame,
+                  drag.current.sourceWidth,
+                  drag.current.sourceHeight,
                   box.width,
                   box.height,
                 );
@@ -392,8 +453,8 @@ export function Preview({
                     1,
                   );
                 update(
-                  (d) => ({ ...d, framing: { ...d.framing, x, y } }),
-                  "drag-frame",
+                  (d) => setFraming(d, drag.current!.id, drag.current!.scope, { x, y }),
+                  drag.current.group,
                 );
             }}
             onPointerUp={() => {
@@ -420,6 +481,7 @@ export function Preview({
                 onClick={() => {
                   setMediaError(false);
                   videoRef.current?.load();
+                  layoutRef.current?.load();
                 }}
               >
                 {t("preview.retry")}
@@ -484,10 +546,10 @@ export function Preview({
           <Button
             size="icon-lg"
             className="size-11 rounded-full shadow-sm"
-            aria-label={playing ? t("preview.pause") : t("preview.play")}
+            aria-label={playing || (layoutWaiting && resumeLayout.current) ? t("preview.pause") : t("preview.play")}
             onClick={() => void play()}
           >
-            {playing ? (
+            {playing || (layoutWaiting && resumeLayout.current) ? (
               <Pause className="fill-current" />
             ) : (
               <Play className="ml-0.5 fill-current" />

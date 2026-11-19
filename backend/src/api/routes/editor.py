@@ -429,6 +429,8 @@ async def combine(task_id: str, request: Request, db: AsyncSession = Depends(get
         state = await session.state()
         if state["status"] != "ready":
             raise HTTPException(409, "Prepare each selected clip before combining")
+        if any(s.get("framing") for s in state["draft"]["document"]["segments"]):
+            raise HTTPException(400, "Combining personalized framing is not available yet. Export or use clip framing first.")
         placements = (
             await run_in_thread(_clip_broll, clip)
             if "broll" not in state["draft"]["document"] else []

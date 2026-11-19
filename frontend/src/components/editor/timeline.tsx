@@ -7,6 +7,7 @@ import {
   Clapperboard,
   CaptionsOff,
   Copy,
+  Crop,
   Film,
   Scissors,
   Trash2,
@@ -416,7 +417,7 @@ export function Timeline({
                     role="button"
                     tabIndex={0}
                     aria-pressed={selected}
-                    aria-label={`${t("timeline.segment", { n: item.index + 1 })}, ${timecode(item.segment.start)} – ${timecode(item.segment.end)}`}
+                    aria-label={`${t("timeline.segment", { n: item.index + 1 })}, ${timecode(item.segment.start)} – ${timecode(item.segment.end)}${item.segment.framing ? `, ${t("framing.custom")}` : ""}`}
                     className={cn(
                       "absolute inset-y-0 overflow-hidden rounded-lg bg-stone-300 outline-none focus-visible:ring-2 focus-visible:ring-ring dark:bg-stone-700",
                       selected && "ring-2 ring-foreground",
@@ -437,6 +438,7 @@ export function Timeline({
                       }
                     }}
                   >
+                    {item.segment.framing && <span title={t("framing.custom")} className="absolute right-3 top-1 z-10 rounded bg-black/70 p-1 text-white"><Crop className="size-3" /></span>}
                     <Filmstrip url={`${endpoint}/media/thumbnails.jpg`} start={item.segment.start} end={item.segment.end} duration={asset.duration} />
                     <span className="pointer-events-none absolute bottom-1 left-2.5 max-w-[calc(100%-1.25rem)] truncate rounded bg-black/55 px-1.5 py-px text-[10px] font-medium text-white backdrop-blur-sm">
                       {t("timeline.segment", { n: item.index + 1 })}

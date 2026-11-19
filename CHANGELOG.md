@@ -4,6 +4,12 @@ What changed in SupoClip for people using the product. Newest dates are first.
 
 Add a line here when a pull request changes something a user can see. Use **New**, **Improved**, **Fixed**, or **Under the hood**, describe the change in plain language, and link the pull request. Skip internal-only work, or fold it into one **Under the hood** line. Do not include customer names, email addresses, user IDs, or anything else private.
 
+## 2026-11-19
+
+- **New:** Give each timeline segment its own framing, with hard cuts between crops. Mix generated layouts and manual framing, keep one aspect ratio for the clip, and export the same framing from the browser or server. ([Review branch](https://github.com/RafaFenix/ideia-corte/compare/feat%2Fmcp-external-selection...feat%2Fsegment-framing))
+
+<!-- Replace the review-branch link with the PR URL when this uncommitted change is submitted. -->
+
 ## 2026-11-18
 
 - **New:** Join the SupoClip Discord community from the homepage, changelog, or site footer to share clips, get editing tips, and vote on feature ideas. ([#437](https://github.com/FujiwaraChoki/supoclip/pull/437))

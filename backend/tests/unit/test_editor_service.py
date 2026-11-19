@@ -429,3 +429,17 @@ async def test_combine_job_reports_while_it_fetches_its_inputs(tmp_path, monkeyp
     await combine_editor({}, "task", "clip1", "clip1.mp4", job)
     assert seen["status"] == "rendering" and seen["idle"] < 5
     assert (await editor_store.job(key, job))["status"] == "failed"
+
+
+async def test_export_does_not_fallback_when_a_declared_layout_is_missing(tmp_path, monkeypatch, editor_store):
+    key, _, document = _export_fixture(tmp_path, monkeypatch, editor_store)
+    editor_store.sessions[key]["asset"]["hasLayout"] = True
+    document["framing"]["fit"] = "auto"
+    document["framing"]["aspect"] = "vertical"
+    job = "a" * 32
+    await editor_store.create_job(key, job, "export", {"document": document, "preset": "tiktok"})
+    render = AsyncMock()
+    monkeypatch.setattr("src.services.editor_service.render_document", render)
+    await export_editor({}, "task", "clip", "clip.mp4", job)
+    assert (await editor_store.job(key, job))["status"] == "failed"
+    render.assert_not_called()

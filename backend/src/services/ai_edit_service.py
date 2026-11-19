@@ -219,6 +219,7 @@ def build_context(document: EditDocument, duration: float, playhead: float | Non
         caption_settings["y"] = round(caption_settings["y"] + transform.y, 3)
     lines.append("Captions: " + json.dumps(caption_settings, separators=(",", ":")))
     lines.append(f"Hook title: {json.dumps(document.hookTitle)}")
+    lines.append("Framing sets change the global fallback only; segment framing overrides stay intact. Keep ranges cannot replace personalized segments.")
     lines.append("Framing: " + json.dumps(document.framing.model_dump(), separators=(",", ":")))
     lines.append("Effects: " + json.dumps(document.effects.model_dump(), separators=(",", ":")))
     lines.append(f"Audio: volume {document.volume}, muted {str(document.muted).lower()}")
@@ -277,6 +278,7 @@ def _subtract(segments: list[dict], cuts: list[tuple[float, float]]) -> list[dic
         for index, (start, end) in enumerate(pieces):
             result.append(
                 {
+                    **segment,
                     "id": segment["id"] if index == 0 else uuid.uuid4().hex,
                     "start": round(start, 4),
                     "end": round(end, 4),
@@ -442,6 +444,9 @@ async def apply_plan(
 
     for op in plan.operations:
         if isinstance(op, KeepRanges):
+            if any(s.get("framing") for s in doc["segments"]):
+                notes.append("Keep ranges skipped: preserve segment framing; use cut ranges or the timeline instead")
+                continue
             ranges = [
                 (_clamp(r.start, 0, duration), _clamp(r.end, 0, duration)) for r in op.ranges
             ]

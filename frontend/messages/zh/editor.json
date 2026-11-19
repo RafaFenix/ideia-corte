@@ -126,7 +126,18 @@
     "center": "将主体居中",
     "landscapeHint": "此片段包含横向细节。横屏版本可完整保留内容，方便阅读。",
     "useLandscape": "使用横屏版本",
-    "autoLayout": "生成的布局"
+    "autoLayout": "生成的布局",
+    "scope": "应用构图",
+    "thisSegment": "应用到此片段",
+    "wholeClip": "应用到整个视频",
+    "replaceAll": "替换所有片段的自定义构图。",
+    "custom": "自定义构图",
+    "inherited": "继承视频构图",
+    "inherit": "使用视频构图",
+    "clipAspect": "视频宽高比",
+    "autoHelp": "自动模式调整生成的画面。选择填充或适应以显示自动裁剪外的区域。分屏或堆叠画面只能整体调整位置。",
+    "loadingLayout": "正在准备生成的布局…",
+    "combineBlocked": "暂不支持合并自定义构图。请先导出或使用视频构图。"
   },
   "audioPanel": {
     "title": "音频",

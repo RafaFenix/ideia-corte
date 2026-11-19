@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { draft } from "../src/lib/editor/document.test-fixture";
-import type { EditDocument } from "../src/lib/editor/document";
+import { normalizeFraming, type EditDocument } from "../src/lib/editor/document";
 
 const generation = {
   id: "one",
@@ -47,7 +47,7 @@ test.beforeAll(() => {
     mediaPath,
   ]);
 });
-async function setup(page: Page, failSave = false, filmstrip?: string, initial: EditDocument = draft, layout = false) {
+async function setup(page: Page, failSave = false, filmstrip?: string, initial: EditDocument = draft, layout = false, sourceFile = mediaPath, layoutFile = mediaPath) {
   const documents = new Map(
     clips.map((c) => [c.id, { revision: 0, document: structuredClone(initial) }]),
   );
@@ -68,6 +68,7 @@ async function setup(page: Page, failSave = false, filmstrip?: string, initial: 
       },
     }),
   );
+  await page.route("**/api/announcements**", r => r.fulfill({ json: { announcements: [] } }));
   await page.route("**/api/tasks/one", (r) => r.fulfill({ json: generation }));
   await page.route("**/api/tasks/one/clips", (r) =>
     r.fulfill({ json: { clips } }),
@@ -126,7 +127,7 @@ async function setup(page: Page, failSave = false, filmstrip?: string, initial: 
     });
   });
   await page.route(/\/editor\/media\/(clean|layout)\.mp4$/, (r) => {
-    const bytes = readFileSync(mediaPath),
+    const bytes = readFileSync(r.request().url().endsWith("layout.mp4") ? layoutFile : sourceFile),
       range = r
         .request()
         .headers()
@@ -153,9 +154,10 @@ async function setup(page: Page, failSave = false, filmstrip?: string, initial: 
   await expect(page.getByLabel("Word 1", { exact: true })).toBeVisible();
   await expect
     .poll(() =>
-      page.locator("video").evaluate((v) => (v as HTMLVideoElement).readyState),
+      page.locator("video").first().evaluate((v) => (v as HTMLVideoElement).readyState),
     )
     .toBeGreaterThanOrEqual(2);
+  await page.waitForFunction(font => Array.from(document.fonts).some(face => face.family === `Editor-${font}` && face.status === "loaded"), initial.captions.font);
   return documents;
 }
 
@@ -507,7 +509,7 @@ for (const width of [1440, 390]) test(`moving and resizing one caption leaves ne
   await page.getByRole("button", { name: "Undo", exact: true }).click();
   await expect.poll(() => saved()).toEqual(moved);
   await page.getByRole("button", { name: "Undo", exact: true }).click();
-  await expect.poll(() => saved()).toEqual(initial);
+  await expect.poll(() => saved()).toEqual(normalizeFraming(initial));
   await page.getByRole("button", { name: "Redo", exact: true }).click();
   await page.getByRole("button", { name: "Redo", exact: true }).click();
   await expect.poll(() => saved()).toEqual(resized);
@@ -770,7 +772,12 @@ test("browser export contains edited video and audio through multiple cuts", asy
   expect(
     probe.streams.some((s: { codec_type: string }) => s.codec_type === "audio"),
   ).toBe(true);
-  expect(Number(probe.format.duration)).toBeCloseTo(3, 1);
+  // AAC encoders can retain a short priming/padding tail in container duration.
+  // The picture timeline itself must remain exactly the edited duration.
+  const videoDuration = Number(probe.streams.find((s: { codec_type: string }) => s.codec_type === "video").duration);
+  expect(videoDuration).toBeCloseTo(3, 2);
+  expect(Number(probe.format.duration)).toBeGreaterThanOrEqual(videoDuration);
+  expect(Number(probe.format.duration) - videoDuration).toBeLessThan(.1);
 });
 
 
@@ -788,9 +795,90 @@ test("wide content offers landscape, preserves playhead, and supports undo and r
   await expect.poll(() => source.evaluate((v: HTMLVideoElement) => v.currentTime)).toBeCloseTo(1, 1);
   await expect.poll(() => documents.get("clip1")!.document.framing.aspect).toBe("original");
   await page.getByRole("button", { name: "Undo", exact: true }).click();
-  await expect(source).toHaveAttribute("src", /layout\.mp4$/);
+  await expect(source).toHaveAttribute("src", /clean\.mp4$/);
+  await expect(page.locator('video[src$="layout.mp4"]')).toHaveCount(1);
   await expect(page.getByRole("button", { name: "Use landscape version", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Redo", exact: true }).click();
   await expect(source).toHaveAttribute("src", /clean\.mp4$/);
   await expect.poll(() => documents.get("clip1")!.document.framing).toEqual({ ...initial.framing, aspect: "original", fit: "contain" });
+});
+
+
+test("segment framing scopes, inheritance, dragging, undo and cache recovery", async ({ page }, info) => {
+  const initial = structuredClone(draft);
+  const documents = await setup(page, false, undefined, initial);
+  await page.getByLabel("Seek to word 2", { exact: true }).click();
+  await page.getByRole("button", { name: "Split at playhead" }).click();
+  await page.getByRole("button", { name: /^Segment 2,/ }).press("Enter");
+  await page.getByRole("tab", { name: "Framing" }).click();
+  await expect(page.getByText(/Inheriting clip framing/)).toBeVisible();
+  await page.getByRole("slider", { name: "Horizontal position", exact: true }).press("End");
+  await expect.poll(() => documents.get("clip1")!.document.segments[1]?.framing?.x).toBe(1);
+  expect(documents.get("clip1")!.document.segments[0].framing).toBeNull();
+  expect(documents.get("clip1")!.document.framing.x).toBe(.5);
+  await expect(page.getByRole("button", { name: /Segment 2,.*Personalized framing/ })).toBeVisible();
+  const box = (await page.getByLabel("Edited video preview").boundingBox())!;
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2 + 30, box.y + box.height / 2);
+  await page.mouse.up();
+  await expect.poll(() => documents.get("clip1")!.document.segments[1]?.framing?.x).toBeLessThan(1);
+  await page.getByRole("button", { name: "Use clip framing", exact: true }).click();
+  await expect.poll(() => documents.get("clip1")!.document.segments[1].framing).toBeNull();
+  await page.getByRole("button", { name: "Undo", exact: true }).click();
+  await expect.poll(() => documents.get("clip1")!.document.segments[1].framing).toBeTruthy();
+  await page.getByRole("radio", { name: "Apply to the whole clip", exact: true }).click();
+  await page.getByRole("slider", { name: "Horizontal position", exact: true }).press("Home");
+  await expect.poll(() => documents.get("clip1")!.document.segments.every(s => !s.framing)).toBe(true);
+  await page.getByRole("button", { name: "Undo", exact: true }).click();
+  await expect.poll(() => documents.get("clip1")!.document.segments[1].framing).toBeTruthy();
+  await page.reload();
+  await page.getByRole("tab", { name: "Framing" }).click();
+  await page.getByRole("button", { name: /^Segment 2,/ }).press("Enter");
+  await expect(page.getByRole("button", { name: "Use clip framing", exact: true })).toBeVisible();
+  await page.screenshot({ path: info.outputPath("segment-framing.png"), fullPage: true });
+});
+
+test("Auto manual Auto preview and browser export keep picture cuts and one audio track", async ({ page }, info) => {
+  const sourceFile = info.outputPath("framing-clean.mp4"), layoutFile = info.outputPath("framing-layout.mp4");
+  execFileSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", "color=red:s=640x360:r=30:d=3,drawbox=x=320:y=0:w=320:h=360:color=blue:t=fill", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=3", "-c:v", "libx264", "-c:a", "aac", "-pix_fmt", "yuv420p", sourceFile]);
+  execFileSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", "color=yellow:s=360x640:r=30:d=3", "-c:v", "libx264", "-pix_fmt", "yuv420p", layoutFile]);
+  const initial: EditDocument = { ...structuredClone(draft), hookTitle: "", captions: { ...draft.captions, enabled: false }, framing: { ...draft.framing, fit: "auto" },
+    segments: [{ id: "a", start: 0, end: 1 }, { id: "b", start: 1, end: 2, framing: { fit: "cover", zoom: 1, x: 1, y: .5 } }, { id: "c", start: 2, end: 3 }] };
+  await setup(page, false, undefined, initial, true, sourceFile, layoutFile);
+  const pixel = () => page.getByLabel("Edited video preview").evaluate((element: HTMLCanvasElement) => Array.from(element.getContext("2d")!.getImageData(Math.floor(element.width / 2), Math.floor(element.height / 2), 1, 1).data));
+  await expect.poll(async () => (await pixel())[1]).toBeGreaterThan(200);
+  const master = page.locator('video[src$="clean.mp4"]');
+  await page.getByLabel("Seek to word 2", { exact: true }).click();
+  await expect.poll(async () => (await pixel())[2]).toBeGreaterThan(200);
+  await expect.poll(async () => (await pixel())[0]).toBeLessThan(40);
+  await page.getByLabel("Seek to word 3", { exact: true }).click();
+  await expect.poll(async () => (await pixel())[1]).toBeGreaterThan(200);
+  // Play across both boundaries without replacing/reloading the audio master.
+  await page.getByRole("button", { name: /^Segment 1,/ }).press("Enter");
+  await page.getByRole("button", { name: "Play", exact: true }).click();
+  await expect.poll(() => master.evaluate((v: HTMLVideoElement) => v.currentTime), { timeout: 15000 }).toBeGreaterThan(2.2);
+  await page.getByRole("button", { name: "Pause", exact: true }).click();
+  await expect(master).toHaveAttribute("src", /clean\.mp4$/);
+  await expect(page.locator('video[src$="layout.mp4"]')).toHaveJSProperty("muted", true);
+  await page.getByRole("button", { name: "Export", exact: true }).click();
+  await page.getByRole("button", { name: /On this device/ }).click();
+  const download = page.waitForEvent("download", { timeout: 60000 });
+  await page.getByRole("button", { name: "Export clip", exact: true }).click();
+  const file = info.outputPath("framing-browser.mp4");
+  await (await download).saveAs(file);
+  const probe = JSON.parse(execFileSync("ffprobe", ["-v", "error", "-show_streams", "-show_format", "-of", "json", file], { encoding: "utf8" }));
+  expect(probe.streams.filter((s: { codec_type: string }) => s.codec_type === "audio")).toHaveLength(1);
+  expect(probe.streams.find((s: { codec_type: string }) => s.codec_type === "video")).toMatchObject({ width: 1080, height: 1920 });
+  // AAC encoders can retain a short priming/padding tail in container duration.
+  // The picture timeline itself must remain exactly the edited duration.
+  const videoDuration = Number(probe.streams.find((s: { codec_type: string }) => s.codec_type === "video").duration);
+  expect(videoDuration).toBeCloseTo(3, 2);
+  expect(Number(probe.format.duration)).toBeGreaterThanOrEqual(videoDuration);
+  expect(Number(probe.format.duration) - videoDuration).toBeLessThan(.1);
+  for (const at of [.5, 1.5, 2.5]) {
+    const rgb = execFileSync("ffmpeg", ["-v", "error", "-ss", String(at), "-i", file, "-frames:v", "1", "-vf", "crop=2:2:538:958,scale=1:1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]);
+    if (at === 1.5) { expect(rgb[2]).toBeGreaterThan(200); expect(rgb[0]).toBeLessThan(40); }
+    else { expect(rgb[0]).toBeGreaterThan(200); expect(rgb[1]).toBeGreaterThan(200); }
+  }
 });

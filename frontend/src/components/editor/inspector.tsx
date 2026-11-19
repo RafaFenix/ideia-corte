@@ -34,6 +34,11 @@ import { Textarea } from "@/components/ui/textarea";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import {
   DEFAULT_EFFECTS,
+  effectiveFraming,
+  setFraming,
+  timecode,
+  type FramingScope,
+  type SegmentFraming,
   captionAt,
   captionKey,
   captionTransform,
@@ -114,6 +119,9 @@ interface Props {
   doc: EditDocument;
   asset: EditorState;
   tab: InspectorTab;
+  segmentIndex: number;
+  framingScope: FramingScope;
+  setFramingScope: (scope: FramingScope) => void;
   setTab: (tab: InspectorTab) => void;
   time: number;
   editTime: number;
@@ -129,6 +137,9 @@ export function Inspector({
   asset,
   tab,
   setTab,
+  segmentIndex,
+  framingScope,
+  setFramingScope,
   time,
   editTime,
   seek,
@@ -139,6 +150,10 @@ export function Inspector({
   selectBroll,
 }: Props) {
   const t = useTranslations("editor");
+  const segment = doc.segments[segmentIndex];
+  const frame = framingScope === "clip" ? doc.framing : effectiveFraming(doc, segment);
+  const changeFrame = (patch: Partial<SegmentFraming>, group = "") =>
+    update(d => setFraming(d, segment.id, framingScope, patch), group ? `framing:${framingScope}:${segment.id}:${group}` : "");
   const activeCaption = captionAt(doc, editTime);
   const captionId = activeCaption ? captionKey(doc, activeCaption) : undefined;
   const placement: CaptionTransform = activeCaption ? captionTransform(doc, activeCaption) : textTransform(doc, "captions");
@@ -638,6 +653,19 @@ export function Inspector({
             </Section>
           </TabsContent>
           <TabsContent value="framing" className="space-y-6 p-4">
+            <Field label={t("framing.scope")}>
+              <ToggleGroup type="single" variant="outline" className="w-full" value={framingScope}
+                onValueChange={value => { if (value) setFramingScope(value as FramingScope); }}>
+                <ToggleGroupItem value="segment" className="h-auto min-h-8 flex-1 whitespace-normal px-2 py-2 text-xs leading-tight">{t("framing.thisSegment")}</ToggleGroupItem>
+                <ToggleGroupItem value="clip" className="h-auto min-h-8 flex-1 whitespace-normal px-2 py-2 text-xs leading-tight">{t("framing.wholeClip")}</ToggleGroupItem>
+              </ToggleGroup>
+              <p className="text-xs text-muted-foreground">{framingScope === "clip" ? t("framing.replaceAll") :
+                `${t("timeline.segment", { n: segmentIndex + 1 })} · ${timecode(segment.start)} – ${timecode(segment.end)} · ${t(segment.framing ? "framing.custom" : "framing.inherited")}`}</p>
+              {framingScope === "segment" && segment.framing && <Button size="sm" variant="outline"
+                onClick={() => update(d => ({ ...d, segments: d.segments.map(s => s.id === segment.id ? { ...s, framing: null } : s) }))}>
+                {t("framing.inherit")}
+              </Button>}
+            </Field>
             <Section
               title={t("framing.title")}
               description={t("framing.description")}
@@ -646,7 +674,7 @@ export function Inspector({
                 {t("framing.landscapeHint")}
                 <Button variant="outline" size="sm" className="mt-2 w-full" onClick={() => update(current => ({ ...current, framing: { ...current.framing, aspect: "original", fit: "contain", zoom: 1, x: .5, y: .5 } }))}>{t("framing.useLandscape")}</Button>
               </AlertDescription></Alert>}
-              <Field label={t("framing.aspect")}>
+              <Field label={t("framing.clipAspect")}>
                 <ToggleGroup
                   type="single"
                   variant="outline"
@@ -691,16 +719,10 @@ export function Inspector({
                   variant="outline"
                   aria-label={t("framing.fit")}
                   className="w-full"
-                  value={doc.framing.fit}
+                  value={frame.fit}
                   onValueChange={(fit) =>
                     fit &&
-                    update((d) => ({
-                      ...d,
-                      framing: {
-                        ...d.framing,
-                        fit: fit as EditDocument["framing"]["fit"],
-                      },
-                    }))
+                    changeFrame({ fit: fit as SegmentFraming["fit"] })
                   }
                 >
                   {asset.hasLayout && <ToggleGroupItem value="auto" className="flex-1 text-xs">{t("framing.autoLayout")}</ToggleGroupItem>}
@@ -713,17 +735,18 @@ export function Inspector({
                 </ToggleGroup>
               </Field>
             </Section>
+            <p className="text-xs text-muted-foreground">{t("framing.autoHelp")}</p>
             <Section title={t("framing.position")}>
               <Range
                 label={t("framing.zoom")}
                 min={1}
                 max={3}
                 step={0.01}
-                value={doc.framing.zoom}
+                value={frame.zoom}
                 unit="×"
                 onChange={(zoom) =>
-                  update(
-                    (d) => ({ ...d, framing: { ...d.framing, zoom } }),
+                  changeFrame(
+                    { zoom },
                     "zoom",
                   )
                 }
@@ -732,11 +755,11 @@ export function Inspector({
                 label={t("framing.horizontal")}
                 min={0}
                 max={100}
-                value={doc.framing.x * 100}
+                value={frame.x * 100}
                 unit="%"
                 onChange={(x) =>
-                  update(
-                    (d) => ({ ...d, framing: { ...d.framing, x: x / 100 } }),
+                  changeFrame(
+                    { x: x / 100 },
                     "position",
                   )
                 }
@@ -745,11 +768,11 @@ export function Inspector({
                 label={t("framing.vertical")}
                 min={0}
                 max={100}
-                value={doc.framing.y * 100}
+                value={frame.y * 100}
                 unit="%"
                 onChange={(y) =>
-                  update(
-                    (d) => ({ ...d, framing: { ...d.framing, y: y / 100 } }),
+                  changeFrame(
+                    { y: y / 100 },
                     "position",
                   )
                 }
@@ -759,10 +782,7 @@ export function Inspector({
                 variant="outline"
                 className="w-full"
                 onClick={() =>
-                  update((d) => ({
-                    ...d,
-                    framing: { ...d.framing, x: 0.5, y: 0.5, zoom: 1 },
-                  }))
+                  changeFrame({ x: 0.5, y: 0.5, zoom: 1 })
                 }
               >
                 <AlignCenter />
