@@ -142,7 +142,7 @@ def test_probe_uses_storage_reference_when_the_local_file_is_gone(runtime_config
 
     monkeypatch.setattr(MediaStorage, "signed_url", signed_url)
     monkeypatch.setattr(
-        "src.services.video_service.ffprobe_duration",
+        "src.services.video_service.upload_duration",
         lambda target: 21.0 if target == "https://signed.example/video" else (_ for _ in ()).throw(AssertionError(target)),
     )
 
@@ -162,7 +162,7 @@ def test_probe_reads_a_local_file_before_the_storage_reference(tmp_path, runtime
     (uploads / "here.mp4").write_bytes(b"video")
     monkeypatch.setattr(MediaStorage, "signed_url", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("signed")))
     monkeypatch.setattr(
-        "src.services.video_service.ffprobe_duration",
+        "src.services.video_service.upload_duration",
         lambda target: 4.0 if Path(target).name == "here.mp4" else (_ for _ in ()).throw(AssertionError(str(target))),
     )
 
@@ -172,7 +172,7 @@ def test_probe_reads_a_local_file_before_the_storage_reference(tmp_path, runtime
 def test_probe_ignores_storage_reference_when_object_storage_is_off(runtime_config, monkeypatch):
     monkeypatch.setattr(MediaStorage, "signed_url", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("signed")))
     monkeypatch.setattr(
-        "src.services.video_service.ffprobe_duration",
+        "src.services.video_service.upload_duration",
         lambda _target: (_ for _ in ()).throw(RuntimeError("missing file")),
     )
 

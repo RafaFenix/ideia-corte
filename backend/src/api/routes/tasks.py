@@ -40,6 +40,7 @@ from ...database import AsyncSessionLocal
 from ...services.task_service import TaskService
 from ...services.video_service import VideoService
 from ...media.upload_ingest import foreign_upload
+from ...media.upload_probe import UPLOAD_PREFLIGHT_TIMEOUT_SECONDS
 from ...repositories.upload_repository import get_stored_upload
 from ...services.billing_service import BillingService, BillingLimitExceeded
 from ...auth_headers import resolve_authenticated_user_id
@@ -237,11 +238,23 @@ async def _preflight_upload_source(url: str, user_id: str, duration_limit: int, 
         reference = row.storage_reference if row is not None else None
     try:
         if reference:
-            duration = await run_in_thread(VideoService.probe_upload_duration, url, user_id, reference)
+            probe = run_in_thread(VideoService.probe_upload_duration, url, user_id, reference)
         else:
-            duration = await run_in_thread(VideoService.probe_upload_duration, url, user_id)
+            probe = run_in_thread(VideoService.probe_upload_duration, url, user_id)
+        duration = await asyncio.wait_for(probe, timeout=UPLOAD_PREFLIGHT_TIMEOUT_SECONDS)
         if not math.isfinite(duration) or duration <= 0:
             raise ValueError("Invalid video duration")
+    except TimeoutError:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "VIDEO_METADATA_UNAVAILABLE",
+                "message": (
+                    "Reading this video's length took too long. Try again, or export "
+                    "a standard MP4 and upload it. No minutes were used."
+                ),
+            },
+        ) from None
     except Exception:
         raise HTTPException(
             status_code=422,

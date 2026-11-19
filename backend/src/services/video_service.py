@@ -73,6 +73,7 @@ from ..config import get_config
 from ..workflows.contracts import PlanCache, PlanContext, WorkflowResult, WorkflowSpec
 from ..workflows.durations import workflow_budget
 from ..media.source_limits import normalize_source_media, probe_media_duration
+from ..media.upload_probe import upload_duration, UPLOAD_PREFLIGHT_TIMEOUT_SECONDS
 from ..media.upload_ingest import (
     materialize_stored_upload,
     persist_local_upload,
@@ -82,7 +83,6 @@ from ..media.upload_ingest import (
 from ..media_storage import MediaStorage
 from ..media.ffmpeg import (
     cap_video_short_side,
-    ffprobe_duration,
     ffprobe_video_size,
     rendered_clip_duration,
     rendered_ranges_duration,
@@ -171,7 +171,10 @@ class VideoService:
             )
             duration = (metadata or {}).get("duration")
         else:
-            duration = await run_in_thread(self.probe_upload_duration, url, user_id)
+            duration = await asyncio.wait_for(
+                run_in_thread(self.probe_upload_duration, url, user_id),
+                timeout=UPLOAD_PREFLIGHT_TIMEOUT_SECONDS,
+            )
         return charged_duration(duration)
 
     @staticmethod
@@ -645,22 +648,22 @@ class VideoService:
 
     @staticmethod
     def probe_upload_duration(url: str, user_id: str, storage_reference: str | None = None) -> float:
-        """Read an uploaded video's length without downloading it."""
+        """Read upload headers and final MP4 packets within a bounded probe."""
         if url.startswith("upload://s3/"):
             storage = MediaStorage()
             reference = storage.validate_source(url, user_id)
-            # ffprobe reads only the container headers through ranged requests.
-            return ffprobe_duration(storage.signed_url(reference, "source.mp4", expires_in=300))
+            # ffprobe seeks through headers and final fragments using ranges.
+            return upload_duration(storage.signed_url(reference, "source.mp4", expires_in=300))
         path = VideoService.resolve_local_video_path(url)
         if path.is_file():
-            return ffprobe_duration(path)
+            return upload_duration(path)
         # Local file and sidecar are both gone. The upload session still names
         # the durable object; ffprobe reads its headers through a signed URL.
         if storage_reference:
             storage = MediaStorage()
             if storage.enabled:
-                return ffprobe_duration(storage.signed_url(storage_reference, "source.mp4", expires_in=300))
-        return ffprobe_duration(path)
+                return upload_duration(storage.signed_url(storage_reference, "source.mp4", expires_in=300))
+        return upload_duration(path)
 
     @staticmethod
     async def download_video(
