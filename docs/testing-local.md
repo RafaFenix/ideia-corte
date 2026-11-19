@@ -85,6 +85,11 @@ Run it after Playwright finishes; browser reseeding would delete its test accoun
 
 ## Other checks
 
+- Local Vitest on Node 26: from `frontend/`, run
+  `NODE_OPTIONS=--no-experimental-webstorage pnpm exec vitest run` (or
+  `NODE_OPTIONS=--no-experimental-webstorage pnpm run test:coverage`). This disables
+  Node's experimental global Web Storage so tests use jsdom's `localStorage`.
+  Without it, editor recovery tests can fail with `localStorage` undefined.
 - Backend: `TEST_DATABASE_URL=postgresql+asyncpg://... backend/.venv/bin/pytest -c backend/pyproject.toml backend/tests -q`
 - Frontend: `pnpm run lint`, `pnpm run typecheck`, `pnpm run test:coverage`, `pnpm run build`.
 - Seeded browser smoke tests: `pnpm run test:e2e`.
@@ -96,6 +101,29 @@ while extracting Playwright browser assets and writing some failure traces.
 Live payment charges, real email/Discord delivery and hosted AI providers are outside
 this local test setup. Billing and webhook validation still run in the automated
 unit suite.
+
+## Upload metadata regressions
+
+From `backend/`, run:
+
+```sh
+.venv/bin/pytest --no-cov tests/unit/test_upload_probe.py tests/unit/test_upload_ingest.py tests/unit/test_task_duration_preflight.py
+```
+
+These tests generate their own normal and fragmented MP4 fixtures with FFmpeg,
+including silent video. A local HTTP server supports byte ranges to exercise the
+same seeks used for object storage; no provider credentials are needed. A slow
+probe fixture verifies that the subprocess is killed and reaped and that signed
+URLs are kept out of timeout messages. Task creation must fail before enqueueing
+or charging minutes when metadata cannot be verified.
+
+Upload probes share a 15-second budget across header and final-packet checks;
+the async preflight has a 17-second guard. MP4 seeks use FFprobe's
+[`read_intervals`](https://ffmpeg.org/ffprobe.html#Main-options) and the
+[MOV demuxer's fragment indexes](https://ffmpeg.org/ffmpeg-formats.html#mov_002c-mp4_002c-ismv).
+An unseekable or unfinished MP4 whose final fragment cannot be verified is
+rejected; retry with a finalized standard MP4. Render probes keep their existing
+behavior. No new environment variable or database migration is required.
 
 ## Retry recovery stress tests
 

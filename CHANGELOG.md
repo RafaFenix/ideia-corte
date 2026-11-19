@@ -6,9 +6,10 @@ Add a line here when a pull request changes something a user can see. Use **New*
 
 ## 2026-11-19
 
-- **New:** Give each timeline segment its own framing, with hard cuts between crops. Mix generated layouts and manual framing, keep one aspect ratio for the clip, and export the same framing from the browser or server. ([Review branch](https://github.com/RafaFenix/ideia-corte/compare/feat%2Fmcp-external-selection...feat%2Fsegment-framing))
-
-<!-- Replace the review-branch link with the PR URL when this uncommitted change is submitted. -->
+- **Under the hood:** The web app and its matching lint configuration now use Next.js 15.5.29. ([#2](https://github.com/RafaFenix/ideia-corte/pull/2))
+- **Fixed:** Uploads whose video length is slow to read now return a clear retry message before the connection times out. MP4 recordings with fragments, including OBS recordings, are measured through their final fragment before checking your minutes and video limit. ([#2](https://github.com/RafaFenix/ideia-corte/pull/2))
+- **Fixed:** Agents waiting for a generation now return within the requested wait time, even when a status request stalls, and keep the last known progress so you can poll again. ([#2](https://github.com/RafaFenix/ideia-corte/pull/2))
+- **New:** Give each timeline segment its own framing, with hard cuts between crops. Mix generated layouts and manual framing, keep one aspect ratio for the clip, and export the same framing from the browser or server. ([#1](https://github.com/RafaFenix/ideia-corte/pull/1))
 
 ## 2026-11-18
 
