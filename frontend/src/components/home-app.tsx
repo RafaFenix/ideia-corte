@@ -62,6 +62,7 @@ interface CaptionTemplate {
 
 
 const FRAMING_IDS = OUTPUT_FORMATS;
+const SELECTION_MODES = ["auto", "external"] as const;
 
 const COLOR_SWATCHES = ["#FFFFFF", "#000000", "#FFD700", "#FF6B6B", "#4ECDC4", "#45B7D1"];
 
@@ -162,6 +163,8 @@ export default function HomeApp() {
   const [captionTemplate, setCaptionTemplate] = useState("default");
   const [availableTemplates, setAvailableTemplates] = useState<CaptionTemplate[]>([]);
   const [outputFormat, setOutputFormat] = useState<OutputFormat>("vertical");
+  // "external": the user's Claude (local selector, subscription) picks the clips instead of the server LLM.
+  const [selection, setSelection] = useState<(typeof SELECTION_MODES)[number]>("auto");
   const [clipLength, setClipLength] = useState<ClipLength>("auto");
   const [clipLengthSaveError, setClipLengthSaveError] = useState(false);
   const [isClipLengthLoading, setIsClipLengthLoading] = useState(false);
@@ -635,11 +638,14 @@ export default function HomeApp() {
     : [...PART_COUNT_OPTIONS];
   const partLabel = partCount === "auto" ? t("parts.auto") : String(partCount);
   const captionSummary = addSubtitles ? selectedTemplate?.name || t("defaultTemplate") : t("noCaptions");
+  const externalSelectionAvailable = workflowsInfo?.external_selection === true && activeWorkflow === "highlights";
+  const usesClaude = externalSelectionAvailable && selection === "external";
   const settingsSummary = [
     lengthText(selectedLength),
     ...(activeWorkflow === "series" ? [t("parts.picker", { value: partLabel })] : []),
     addSubtitles ? `${t("captions")}: ${captionSummary}` : captionSummary,
     t(`framingOptions.${outputFormat}.label`),
+    ...(usesClaude ? [t("selection.external.short")] : []),
   ].join(" · ");
   // Cleanup is on by default, so it isn't counted as a change here; its own section shows what's on.
   const changedCount = advancedCount + (includeBroll ? 1 : 0);
@@ -794,6 +800,7 @@ export default function HomeApp() {
       if (advancedCount > 0) options.advanced = advancedChanges;
       if (Object.keys(options).length > 0) request.workflow_options = options;
       if (sentInstructions) request.instructions = sentInstructions;
+      if (usesClaude) request.selection = "external";
 
       setStatusMessage(sourceType === "youtube" ? t("status.checkingLength") : t("status.starting"));
       const startResponse = await fetch("/api/tasks/create", {
@@ -1273,6 +1280,23 @@ export default function HomeApp() {
                   </div>
                     </>
                   ) },
+                  ...(externalSelectionAvailable ? [{ id: "selection", label: t("selection.title"), icon: <Sparkles />, value: t(`selection.${selection}.label`), content: (
+                  <div className="grid grid-cols-2 gap-2" role="radiogroup" aria-label={t("selection.title")}>
+                    {SELECTION_MODES.map((id) => (
+                      <button
+                        key={id}
+                        type="button"
+                        role="radio"
+                        aria-checked={selection === id}
+                        onClick={() => setSelection(id)}
+                        className={cn("rounded-xl border p-3 text-left transition-colors hover:bg-accent", selection === id && "border-foreground ring-1 ring-foreground")}
+                      >
+                        <span className="block text-sm font-medium">{t(`selection.${id}.label`)}</span>
+                        <span className="block text-xs text-muted-foreground">{t(`selection.${id}.hint`)}</span>
+                      </button>
+                    ))}
+                  </div>
+                  ) }] : []),
                   { id: "cleanup", label: t("cleanup"), icon: <Wand2 />, count: cleanupCount, content: (
                     <div className="space-y-4">
                   <div>

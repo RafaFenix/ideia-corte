@@ -345,5 +345,17 @@
       "relaxed": "Permitidos",
       "question": "Una pregunta"
     }
+  },
+  "selection": {
+    "title": "Selección",
+    "auto": {
+      "label": "IA del sistema",
+      "hint": "La IA del servidor elige los clips"
+    },
+    "external": {
+      "label": "Claude (suscripción)",
+      "hint": "Tu Claude elige los clips con el selector local",
+      "short": "Claude elige"
+    }
   }
 }

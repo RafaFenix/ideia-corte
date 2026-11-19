@@ -345,5 +345,17 @@
       "relaxed": "Erlaubt",
       "question": "Eine Frage"
     }
+  },
+  "selection": {
+    "title": "Auswahl",
+    "auto": {
+      "label": "System-KI",
+      "hint": "Die KI des Servers wählt die Clips"
+    },
+    "external": {
+      "label": "Claude (Abo)",
+      "hint": "Dein Claude wählt die Clips über den lokalen Selektor",
+      "short": "Claude wählt"
+    }
   }
 }

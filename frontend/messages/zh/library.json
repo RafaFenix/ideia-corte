@@ -4,7 +4,8 @@
     "processing": "处理中",
     "queued": "排队中",
     "failed": "失败",
-    "cancelled": "已取消"
+    "cancelled": "已取消",
+    "awaitingSelection": "等待选择"
   },
   "loading": "正在加载",
   "loadingEllipsis": "正在加载…",

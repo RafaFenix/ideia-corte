@@ -15,6 +15,7 @@ dependencies = [
 
 [project.scripts]
 supoclip-mcp = "supoclip_mcp.server:main"
+supoclip-claude-selector = "supoclip_mcp.claude_selector:main"
 
 [build-system]
 requires = ["hatchling"]
