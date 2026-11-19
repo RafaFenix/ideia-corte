@@ -31,6 +31,7 @@ from ..editor_state import (
     ensure_session,
     get_store,
 )
+from ..stream_transfer import run_stream_download
 from ..utils.async_helpers import run_in_thread
 from ..media_storage import MediaStorage, STORAGE_ERRORS, media_work
 from ..stream_source import download_stream_sections
@@ -229,7 +230,7 @@ def generated_emphasis(words: list[dict], task: dict) -> set[int]:
 
 
 # Layouts that are a composed frame, not a crop the editor can rebuild.
-PRESERVED_LAYOUT_KINDS = frozenset({"split", "stack", "reaction", "overlap"})
+PRESERVED_LAYOUT_KINDS = frozenset({"split", "stack", "reaction", "overlap", "interview"})
 # Plans kept beside the uncropped source as layout.mp4 ("Auto layout"), so the
 # studio opens on the generated framing and manual crops still start from the
 # full frame: content fits, the compositor, and the tracked face/speaker crops.
@@ -624,7 +625,7 @@ async def _download_editor_source(service, task_id: str, task: dict, ranges: lis
             )
             raise EditorPrepareError(youtube_download_failure(download_errors))
         return Path(downloaded)
-    return await run_in_thread(
+    return await run_stream_download(
         download_stream_sections, source_url,
         [{"start_time": start, "end_time": end} for start, end in ranges],
         task.get("source_duration_seconds"), task_id,

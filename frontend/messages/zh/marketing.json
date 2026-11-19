@@ -23,10 +23,22 @@
       "website": "面向短视频内容的开源 AI 视频剪辑。"
     }
   },
+  "community": {
+    "eyebrow": "Discord 上的 SupoClip",
+    "title": "和大家一起剪出更好的短片。",
+    "body": "请大家看看你的剪辑，交流编辑技巧，也欢迎告诉我们如何改进 SupoClip。",
+    "join": "在 Discord 上加入",
+    "activities": {
+      "showcase": "分享短片并获取反馈",
+      "tips": "交流剪辑技巧",
+      "ideas": "为功能创意投票"
+    }
+  },
   "footer": {
     "tagline": "开源 AI 视频剪辑工具。使用托管应用，或在你自己的基础设施上运行。",
     "github": "GitHub",
     "ios": "iOS 应用",
+    "discord": "Discord 社区",
     "columns": {
       "guides": "指南",
       "compare": "对比",
@@ -143,6 +155,12 @@
       "title": "Turn Twitch VODs into TikTok clips and Shorts",
       "label": "Twitch VOD to Shorts",
       "description": "Review spoken highlights, preserve gameplay context, and export vertical clips."
+    },
+    "blog_how_to_clip_gta_6": {
+      "eyebrow": "GTA 6 剪辑",
+      "title": "如何剪辑 GTA 6",
+      "label": "剪辑 GTA 6",
+      "description": "剪辑活动的实际收益、Rockstar 的规则，以及从直播回放到竖屏短片的完整流程。"
     },
     "blog_repurpose_webinar_clips": {
       "eyebrow": "Webinar repurposing",

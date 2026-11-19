@@ -23,10 +23,22 @@
       "website": "Clipping de vídeo com IA de código aberto para conteúdo curto."
     }
   },
+  "community": {
+    "eyebrow": "SupoClip no Discord",
+    "title": "Crie clipes melhores em comunidade.",
+    "body": "Peça uma segunda opinião sobre um corte, troque dicas de edição e conte como podemos melhorar o SupoClip.",
+    "join": "Entre no Discord",
+    "activities": {
+      "showcase": "Compartilhe um clipe e receba feedback",
+      "tips": "Troque dicas de edição",
+      "ideas": "Vote em ideias de recursos"
+    }
+  },
   "footer": {
     "tagline": "Clipper de vídeo com IA de código aberto. Use o app hospedado ou rode na sua própria infraestrutura.",
     "github": "GitHub",
     "ios": "App para iOS",
+    "discord": "Comunidade no Discord",
     "columns": {
       "guides": "Guias",
       "compare": "Comparar",
@@ -143,6 +155,12 @@
       "title": "Turn Twitch VODs into TikTok clips and Shorts",
       "label": "Twitch VOD to Shorts",
       "description": "Review spoken highlights, preserve gameplay context, and export vertical clips."
+    },
+    "blog_how_to_clip_gta_6": {
+      "eyebrow": "Clipes de GTA 6",
+      "title": "Como fazer clipes de GTA 6",
+      "label": "Clipes de GTA 6",
+      "description": "Quanto pagam as campanhas de clipping, as regras da Rockstar e o fluxo do VOD ao clipe vertical."
     },
     "blog_repurpose_webinar_clips": {
       "eyebrow": "Webinar repurposing",

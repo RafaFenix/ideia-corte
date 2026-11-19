@@ -21,6 +21,7 @@ from ..analytics import capture_event, elapsed_seconds, source_kind
 from ..broll import BRollSession
 from ..workers.job_queue import JobQueue
 from ..repositories.task_repository import TaskRepository
+from ..repositories.task_idempotency_repository import TaskIdempotencyReplay
 from ..repositories.minute_usage_repository import charged_duration
 from ..repositories.source_repository import SourceRepository
 from ..repositories.clip_repository import ClipRepository
@@ -45,7 +46,7 @@ from .task_completion_email_service import (
 )
 from ..config import Config, get_config
 from ..youtube_utils import cleanup_downloaded_files, extract_video_id
-from ..youtube_proxy import YouTubeGeoRestrictedError
+from ..youtube_proxy import YouTubeGeoRestrictedError, is_age_restricted_error
 from ..youtube_source import load_time_map, localize_segment, restore_clip_timeline, transcript_source_for
 from ..clip_cleanup import normalize_clip_cleanup_settings
 from ..clip_duration import clip_duration, validate_clip_length
@@ -357,10 +358,14 @@ class TaskService(ClipEditingMixin):
         upload_request_key: Optional[str] = None,
         workflow: str = "highlights",
         workflow_options: Optional[Dict[str, Any]] = None,
+        idempotency: Optional[tuple[str, str]] = None,
     ) -> str:
         """
         Create a new task with associated source.
         Returns the task ID.
+
+        With ``idempotency`` (key, request hash), raises ``TaskIdempotencyReplay``
+        when a concurrent request with the same key created its task first.
         """
         self.reused_upload_task = False
         self.reused_upload_job_id = None
@@ -402,22 +407,28 @@ class TaskService(ClipEditingMixin):
         )
 
         # Create task
-        task_id = await self.task_repo.create_task(
-            self.db,
-            user_id=user_id,
-            source_id=source_id,
-            status="queued",  # Changed from "processing" to "queued"
-            font_family=font_family,
-            font_size=font_size,
-            font_color=font_color,
-            caption_template=caption_template,
-            include_broll=include_broll,
-            processing_mode=processing_mode,
-            source_duration_seconds=source_duration_seconds,
-            charge_minutes=self.config.monetization_enabled,
-            workflow=workflow,
-            workflow_options=workflow_options,
-        )
+        try:
+            task_id = await self.task_repo.create_task(
+                self.db,
+                user_id=user_id,
+                source_id=source_id,
+                status="queued",  # Changed from "processing" to "queued"
+                font_family=font_family,
+                font_size=font_size,
+                font_color=font_color,
+                caption_template=caption_template,
+                include_broll=include_broll,
+                processing_mode=processing_mode,
+                source_duration_seconds=source_duration_seconds,
+                charge_minutes=self.config.monetization_enabled,
+                workflow=workflow,
+                workflow_options=workflow_options,
+                **({"idempotency": idempotency} if idempotency else {}),
+            )
+        except TaskIdempotencyReplay:
+            # The task insert rolled back. Drop the source made for it.
+            await self.source_repo.delete_unused_source(self.db, source_id)
+            raise
 
         if upload_request_key and url.startswith("upload://"):
             metadata: Dict[str, Any] = {"upload_request_key": upload_request_key}
@@ -1047,6 +1058,8 @@ class TaskService(ClipEditingMixin):
                 error_code = e.code
             elif isinstance(e, YouTubeGeoRestrictedError):
                 error_code = "youtube_geo_restricted"
+            elif is_age_restricted_error(e):
+                error_code = "youtube_age_restricted"
             elif "download" in message or "youtube" in message:
                 error_code = "download_error"
             elif "analysis" in message:

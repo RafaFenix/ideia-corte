@@ -67,6 +67,11 @@ class Config:
         # download chain changes until this template is set.
         self.youtube_proxy_url = os.getenv("YOUTUBE_PROXY_URL", "").strip()
         self.youtube_proxy_timeout_seconds = self._get_int_env("YOUTUBE_PROXY_TIMEOUT_SECONDS", 300)
+        # Twitch/Kick: YOUTUBE_PROXY_TIMEOUT_SECONDS is how long a download may go
+        # without receiving data. This is the shortest overall cap for one call.
+        # A long VOD is allowed longer, up to an hour, while data is still arriving.
+        # Do not use the idle timeout as that cap.
+        self.stream_download_max_seconds = self._get_int_env("STREAM_DOWNLOAD_MAX_SECONDS", 2400)
         self.youtube_proxy_country = os.getenv("YOUTUBE_PROXY_COUNTRY", "").strip()
         self.youtube_pot_provider_url = os.getenv("YOUTUBE_POT_PROVIDER_URL", "").strip()
         self.youtube_download_max_bytes = self._get_int_env("YOUTUBE_DOWNLOAD_MAX_BYTES", 2_000_000_000)
@@ -227,6 +232,23 @@ class Config:
         ).rstrip("/")
         self.discord_feedback_webhook_url = self._get_optional_env("DISCORD_FEEDBACK_WEBHOOK_URL")
         self.discord_sales_webhook_url = self._get_optional_env("DISCORD_SALES_WEBHOOK_URL")
+        # Hermes assistant (operator chat) route for every new submission, signed with Hermes' V2
+        # scheme. Server-configured: both set adds a read-only "hermes" webhook (docs/feedback.md).
+        self.hermes_feedback_webhook_url = self._get_optional_env("HERMES_FEEDBACK_WEBHOOK_URL")
+        self.hermes_feedback_webhook_secret = self._get_optional_env("HERMES_FEEDBACK_WEBHOOK_SECRET")
+
+        # Cancellation reviews (docs/cancellation-reviews.md). Stripe signs each account's
+        # endpoint with its own secret: "acct_A:whsec_...,acct_B:whsec_...". The legacy account
+        # id resolves users whose stripe_account_id is empty.
+        self.stripe_cancellation_webhook_secrets = self._get_optional_env("STRIPE_CANCELLATION_WEBHOOK_SECRETS")
+        self.stripe_source_account_id = self._get_optional_env("STRIPE_SOURCE_ACCOUNT_ID")
+        self.cancellation_reviews_enabled = self._get_bool_env("CANCELLATION_REVIEWS_ENABLED", False)
+        self.cancellation_review_settle_seconds = max(
+            60, self._get_int_env("CANCELLATION_REVIEW_SETTLE_SECONDS", 600)
+        )
+        # Signed chat webhook that receives the finished reports (HMAC V2, see delivery.py).
+        self.cancellation_report_webhook_url = self._get_optional_env("CANCELLATION_REPORT_WEBHOOK_URL")
+        self.cancellation_report_webhook_secret = self._get_optional_env("CANCELLATION_REPORT_WEBHOOK_SECRET")
 
         # Social publishing. Each provider needs an OAuth app registered by the
         # operator; users then connect their own accounts through that app.

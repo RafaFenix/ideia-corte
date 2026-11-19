@@ -23,10 +23,22 @@
       "website": "AI video clipping open source untuk konten pendek."
     }
   },
+  "community": {
+    "eyebrow": "SupoClip di Discord",
+    "title": "Bikin klip lebih bagus bersama.",
+    "body": "Minta pendapat tentang hasil editmu, bertukar tips, dan beri tahu kami cara membuat SupoClip lebih baik.",
+    "join": "Gabung di Discord",
+    "activities": {
+      "showcase": "Bagikan klip dan dapatkan masukan",
+      "tips": "Bertukar tips penyuntingan",
+      "ideas": "Pilih ide fitur favoritmu"
+    }
+  },
   "footer": {
     "tagline": "AI video clipper open source. Pakai aplikasi yang di-host atau jalankan di infrastrukturmu sendiri.",
     "github": "GitHub",
     "ios": "Aplikasi iOS",
+    "discord": "Komunitas Discord",
     "columns": {
       "guides": "Panduan",
       "compare": "Bandingkan",
@@ -143,6 +155,12 @@
       "title": "Turn Twitch VODs into TikTok clips and Shorts",
       "label": "Twitch VOD to Shorts",
       "description": "Review spoken highlights, preserve gameplay context, and export vertical clips."
+    },
+    "blog_how_to_clip_gta_6": {
+      "eyebrow": "Clipping GTA 6",
+      "title": "Cara membuat klip GTA 6",
+      "label": "Klip GTA 6",
+      "description": "Bayaran kampanye clipping, aturan Rockstar, dan alur kerja dari VOD ke klip vertikal."
     },
     "blog_repurpose_webinar_clips": {
       "eyebrow": "Webinar repurposing",
