@@ -126,7 +126,18 @@
     "center": "Centrar sujeto",
     "landscapeHint": "Este clip contiene detalles a lo ancho. La versión horizontal los mantiene legibles sin recortar contenido.",
     "useLandscape": "Usar versión horizontal",
-    "autoLayout": "Composición generada"
+    "autoLayout": "Composición generada",
+    "scope": "Aplicar encuadre",
+    "thisSegment": "Aplicar a este segmento",
+    "wholeClip": "Aplicar a todo el clip",
+    "replaceAll": "Sustituye el encuadre personalizado de todos los segmentos.",
+    "custom": "Encuadre personalizado",
+    "inherited": "Heredando encuadre del clip",
+    "inherit": "Usar encuadre del clip",
+    "clipAspect": "Proporción del clip",
+    "autoHelp": "Auto ajusta la composición generada. Elige Rellenar o Ajustar para recuperar áreas fuera del recorte automático. Las composiciones divididas o apiladas solo se reposicionan completas.",
+    "loadingLayout": "Preparando composición generada…",
+    "combineBlocked": "Combinar encuadres personalizados aún no está disponible. Exporta o usa el encuadre del clip."
   },
   "audioPanel": {
     "title": "Audio",

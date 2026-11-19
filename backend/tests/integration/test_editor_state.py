@@ -299,3 +299,28 @@ async def test_sessions_follow_their_clip_like_the_media_does(db_session, initia
     assert await store.load(fresh) is not None
     await store.delete(live)
     await store.delete(fresh)
+
+
+async def test_segment_framing_persists_in_snapshots_with_optimistic_revision(store, session):
+    from src.editor_document import EditDocument
+    from src.services.editor_service import upgrade_document
+    key, *identity = session
+    await store.claim_prepare(key, *identity, "prepare")
+    await store.finish_prepare(key, *identity, ASSET, DOCUMENT)
+    loaded = await store.load(key)
+    upgraded = upgrade_document(loaded["draft"]["document"], {}, {})
+    assert upgraded["segments"][0]["framing"] is None
+    assert (await store.load(key))["draft"]["revision"] == 0
+    doc = EditDocument.model_validate(upgraded).model_dump()
+    doc["segments"][0]["framing"] = {"fit": "cover", "zoom": 1.2, "x": .1, "y": .5}
+    assert await store.save_draft(key, doc, 0) == 1
+    assert await store.save_draft(key, DOCUMENT, 0) is None
+    job = uuid.uuid4().hex
+    assert await store.create_job(key, job, "export", {"document": doc})
+    loaded = await store.load(key)
+    assert loaded["draft"] == {"revision": 1, "document": doc}
+    assert loaded["original"] == DOCUMENT
+    # Subsequent changes cannot mutate an already queued render snapshot.
+    assert await store.save_draft(key, {**doc, "segments": DOCUMENT["segments"]}, 1) == 2
+    claimed = await store.start_job(job)
+    assert claimed["request"]["document"]["segments"][0]["framing"]["x"] == .1

@@ -47,7 +47,7 @@ export function useTaskProgress<T>({ taskId, active, refresh, onProgress, onClip
       const data = read(event);
       if (!data) return;
       callbacks.current.onProgress(data);
-      if (["completed", "cancelled", "error"].includes(data.status)) void reconcile();
+      if (["completed", "cancelled", "error", "awaiting_selection"].includes(data.status)) void reconcile();
     };
     source.addEventListener("status", progress);
     source.addEventListener("progress", progress);

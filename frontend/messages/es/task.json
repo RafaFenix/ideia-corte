@@ -56,6 +56,8 @@
   "cancelledBody": "Vuelve a intentar esta generación cuando quieras. Los clips terminados se conservarán.",
   "failedTitle": "Error de procesamiento",
   "failedBody": "El procesamiento ha fallado. Reintenta la generación. Los clips terminados se conservarán.",
+  "failedBodyAgeRestricted": "Este video de YouTube tiene restricción de edad, así que no podemos descargarlo. Descarga el video tú mismo y sube el archivo. No se usaron minutos.",
+  "failedBodyGeoRestricted": "Este video de YouTube no está disponible en nuestra región, así que no podemos descargarlo. Descarga el video tú mismo y sube el archivo. No se usaron minutos.",
   "backHome": "Volver al inicio",
   "noClipsTitle": "No se generaron clips",
   "noClipsBody": "La generación terminó, pero no se crearon clips. Es posible que el video no tuviera contenido adecuado para recortar.",
@@ -129,6 +131,8 @@
   "eta": {
     "queued": "Esperando a un worker",
     "estimating": "Calculando el tiempo restante…",
+    "stillDownloading": "Tu video se sigue descargando…",
+    "minuteRange": "Quedan entre {low} y {high} min aprox.",
     "underMinute": "Menos de un minuto",
     "minutes": "Unos {count} min restantes"
   },
@@ -280,6 +284,22 @@
       "scenicRoute": "Este video ha elegido la ruta panorámica. Tardará un poco más de lo habitual.",
       "bumps": "Hay algunos baches en el camino. Los estamos superando—solo necesitamos un poco más de tiempo.",
       "slower": "Las cosas van un poco más despacio de lo habitual. Seguimos en ello."
+    }
+  },
+  "claudePickingTitle": "Claude está eligiendo los clips…",
+  "claudePickingBody": "Tu Claude está leyendo la transcripción. El renderizado empieza en cuanto envíe los clips.",
+  "claudeSelector": {
+    "starting": {
+      "title": "Esperando a Claude",
+      "body": "La transcripción está lista. El selector local de Claude tomará esta tarea enseguida."
+    },
+    "off": {
+      "title": "El selector de Claude no está en marcha",
+      "body": "Inícialo en este equipo con `uv run --directory mcp supoclip-claude-selector`; tomará esta tarea automáticamente."
+    },
+    "stalled": {
+      "title": "El selector de Claude se detuvo",
+      "body": "Se detuvo mientras elegía. Reinícialo con `uv run --directory mcp supoclip-claude-selector`; esta tarea se retomará."
     }
   }
 }

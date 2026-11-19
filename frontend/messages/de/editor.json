@@ -126,7 +126,18 @@
     "center": "Person zentrieren",
     "landscapeHint": "Dieser Clip enthält breite Bilddetails. Eine Querformatversion zeigt sie gut lesbar, ohne Inhalte abzuschneiden.",
     "useLandscape": "Querformat verwenden",
-    "autoLayout": "Generiertes Layout"
+    "autoLayout": "Generiertes Layout",
+    "scope": "Bildausschnitt anwenden",
+    "thisSegment": "Auf diesen Abschnitt anwenden",
+    "wholeClip": "Auf den gesamten Clip anwenden",
+    "replaceAll": "Ersetzt individuelle Bildausschnitte aller Abschnitte.",
+    "custom": "Individueller Bildausschnitt",
+    "inherited": "Bildausschnitt vom Clip geerbt",
+    "inherit": "Bildausschnitt des Clips verwenden",
+    "clipAspect": "Seitenverhältnis des Clips",
+    "autoHelp": "Auto passt die erzeugte Komposition an. Wähle Füllen oder Einpassen, um Bereiche außerhalb des automatischen Ausschnitts zu zeigen. Geteilte oder gestapelte Kompositionen lassen sich nur als Ganzes verschieben.",
+    "loadingLayout": "Erzeugtes Layout wird vorbereitet…",
+    "combineBlocked": "Individuelle Bildausschnitte können noch nicht kombiniert werden. Exportiere oder verwende den Bildausschnitt des Clips."
   },
   "audioPanel": {
     "title": "Audio",

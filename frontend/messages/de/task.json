@@ -56,6 +56,8 @@
   "cancelledBody": "Versuch diese Generierung erneut, wenn du bereit bist. Deine fertigen Clips bleiben erhalten.",
   "failedTitle": "Verarbeitung fehlgeschlagen",
   "failedBody": "Die Verarbeitung ist fehlgeschlagen. Versuch die Generierung erneut. Deine fertigen Clips bleiben erhalten.",
+  "failedBodyAgeRestricted": "Dieses YouTube-Video ist altersbeschränkt, daher können wir es nicht herunterladen. Lade das Video selbst herunter und lade die Datei hoch. Es wurden keine Minuten verbraucht.",
+  "failedBodyGeoRestricted": "Dieses YouTube-Video ist in unserer Region nicht verfügbar, daher können wir es nicht herunterladen. Lade das Video selbst herunter und lade die Datei hoch. Es wurden keine Minuten verbraucht.",
   "backHome": "Zurück zur Startseite",
   "noClipsTitle": "Keine Clips erzeugt",
   "noClipsBody": "Die Generierung ist fertig, aber es wurden keine Clips erzeugt. Das Video hatte vielleicht keinen passenden Inhalt zum Schneiden.",
@@ -129,6 +131,8 @@
   "eta": {
     "queued": "Wartet auf einen freien Worker",
     "estimating": "Restzeit wird geschätzt…",
+    "stillDownloading": "Dein Video wird noch heruntergeladen…",
+    "minuteRange": "Noch etwa {low}–{high} Min.",
     "underMinute": "Weniger als eine Minute",
     "minutes": "Noch etwa {count} Min."
   },
@@ -280,6 +284,22 @@
       "scenicRoute": "Dieses Video nimmt die Panoramaroute. Es dauert etwas länger als sonst.",
       "bumps": "Der Weg ist gerade etwas holprig. Wir arbeiten uns durch—noch ein wenig Geduld.",
       "slower": "Heute läuft es etwas langsamer als sonst. Wir bleiben dran."
+    }
+  },
+  "claudePickingTitle": "Claude wählt die Clips aus…",
+  "claudePickingBody": "Dein Claude liest das Transkript. Das Rendern startet, sobald die Clips gesendet sind.",
+  "claudeSelector": {
+    "starting": {
+      "title": "Warte auf Claude",
+      "body": "Das Transkript ist fertig. Der lokale Claude-Selektor übernimmt diese Aufgabe gleich."
+    },
+    "off": {
+      "title": "Der Claude-Selektor läuft nicht",
+      "body": "Starte ihn auf diesem Rechner mit `uv run --directory mcp supoclip-claude-selector`; er übernimmt diese Aufgabe automatisch."
+    },
+    "stalled": {
+      "title": "Der Claude-Selektor wurde gestoppt",
+      "body": "Er hat mitten in der Auswahl aufgehört. Starte ihn neu mit `uv run --directory mcp supoclip-claude-selector`; die Aufgabe wird fortgesetzt."
     }
   }
 }

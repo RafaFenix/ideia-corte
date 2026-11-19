@@ -21,6 +21,7 @@ from ..analytics import capture_event, elapsed_seconds, source_kind
 from ..broll import BRollSession
 from ..workers.job_queue import JobQueue
 from ..repositories.task_repository import TaskRepository
+from ..repositories.task_idempotency_repository import TaskIdempotencyReplay
 from ..repositories.minute_usage_repository import charged_duration
 from ..repositories.source_repository import SourceRepository
 from ..repositories.clip_repository import ClipRepository
@@ -45,11 +46,12 @@ from .task_completion_email_service import (
 )
 from ..config import Config, get_config
 from ..youtube_utils import cleanup_downloaded_files, extract_video_id
-from ..youtube_proxy import YouTubeGeoRestrictedError
+from ..youtube_proxy import YouTubeGeoRestrictedError, is_age_restricted_error
 from ..youtube_source import load_time_map, localize_segment, restore_clip_timeline, transcript_source_for
 from ..clip_cleanup import normalize_clip_cleanup_settings
 from ..clip_duration import clip_duration, validate_clip_length
 from ..ai import TRANSCRIPT_ANALYSIS_CACHE_VERSION
+from ..external_selection import AWAITING_SELECTION, AwaitingSelection, is_external
 from ..clip_source_map import load_clip_caption_settings, normalize_source_ranges, source_range_bounds
 from ..media.timeline import seconds_to_mmss
 from ..workflows.boundaries import cleanup_key
@@ -357,10 +359,14 @@ class TaskService(ClipEditingMixin):
         upload_request_key: Optional[str] = None,
         workflow: str = "highlights",
         workflow_options: Optional[Dict[str, Any]] = None,
+        idempotency: Optional[tuple[str, str]] = None,
     ) -> str:
         """
         Create a new task with associated source.
         Returns the task ID.
+
+        With ``idempotency`` (key, request hash), raises ``TaskIdempotencyReplay``
+        when a concurrent request with the same key created its task first.
         """
         self.reused_upload_task = False
         self.reused_upload_job_id = None
@@ -402,22 +408,28 @@ class TaskService(ClipEditingMixin):
         )
 
         # Create task
-        task_id = await self.task_repo.create_task(
-            self.db,
-            user_id=user_id,
-            source_id=source_id,
-            status="queued",  # Changed from "processing" to "queued"
-            font_family=font_family,
-            font_size=font_size,
-            font_color=font_color,
-            caption_template=caption_template,
-            include_broll=include_broll,
-            processing_mode=processing_mode,
-            source_duration_seconds=source_duration_seconds,
-            charge_minutes=self.config.monetization_enabled,
-            workflow=workflow,
-            workflow_options=workflow_options,
-        )
+        try:
+            task_id = await self.task_repo.create_task(
+                self.db,
+                user_id=user_id,
+                source_id=source_id,
+                status="queued",  # Changed from "processing" to "queued"
+                font_family=font_family,
+                font_size=font_size,
+                font_color=font_color,
+                caption_template=caption_template,
+                include_broll=include_broll,
+                processing_mode=processing_mode,
+                source_duration_seconds=source_duration_seconds,
+                charge_minutes=self.config.monetization_enabled,
+                workflow=workflow,
+                workflow_options=workflow_options,
+                **({"idempotency": idempotency} if idempotency else {}),
+            )
+        except TaskIdempotencyReplay:
+            # The task insert rolled back. Drop the source made for it.
+            await self.source_repo.delete_unused_source(self.db, source_id)
+            raise
 
         if upload_request_key and url.startswith("upload://"):
             metadata: Dict[str, Any] = {"upload_request_key": upload_request_key}
@@ -520,6 +532,9 @@ class TaskService(ClipEditingMixin):
             # honour it with the ARQ job arguments unchanged.
             task_row = await self.task_repo.get_task_by_id(self.db, task_id) or {}
             spec = workflow_spec_from_task(task_row, clip_length)
+            # The user's MCP client picks the clips (selection: "external"). The flag lives in
+            # source_metadata, which get_task_by_id (also the API's task payload) does not return.
+            external = is_external(await self.task_repo.load_source_metadata(self.db, task_id))
             prior_outputs = bool(await self.clip_repo.get_clips_by_task(self.db, task_id))
             # New tasks already have an atomic acceptance charge. Recover queued
             # legacy jobs with missing durations before doing paid processing.
@@ -570,7 +585,8 @@ class TaskService(ClipEditingMixin):
                 if spec.uses_performance_context
                 else None
             )
-            if performance_context:
+            if performance_context or external:
+                # External picks never read or feed the shared analysis cache.
                 cached_analysis_json = None
             input_key = checkpoint_input_key(url, source_type, processing_mode, clip_length, self.config)
             checkpoint = await self.checkpoint_repo.get(self.db, task_id, input_key)
@@ -650,6 +666,8 @@ class TaskService(ClipEditingMixin):
                     "outline_cache_key": outline_cache_key,
                     "cleanup_settings": normalized_cleanup_settings,
                 }
+            if external:
+                workflow_kwargs["external_selection"] = True
 
             pipeline_start = perf_counter()
             result = await self.video_service.process_video_complete(
@@ -712,11 +730,11 @@ class TaskService(ClipEditingMixin):
                 transcript_text=result.get("transcript"),
                 analysis_json=(
                     result.get("analysis_json")
-                    if not performance_context and analysis_cache_key == cache_key
+                    if not (performance_context or external) and analysis_cache_key == cache_key
                     else None
                 ),
             )
-            if not performance_context and analysis_cache_key != cache_key:
+            if not (performance_context or external) and analysis_cache_key != cache_key:
                 await self.cache_repo.upsert_cache(
                     self.db,
                     cache_key=analysis_cache_key,
@@ -762,7 +780,8 @@ class TaskService(ClipEditingMixin):
             failed_positions = []
             render_start = perf_counter()
             # Read from the task so queued jobs and resumes honour the setting.
-            include_broll = bool(task_row.get("include_broll"))
+            # B-roll planning needs the backend LLM, which external selection does without.
+            include_broll = bool(task_row.get("include_broll")) and not external
             broll_session = BRollSession()
             wants_previews: Optional[bool] = None  # checked once a clip renders
             # (virality, render order, still) for each saved clip.
@@ -994,6 +1013,16 @@ class TaskService(ClipEditingMixin):
                 "key_topics": result.get("key_topics"),
             }
 
+        except AwaitingSelection:
+            message = "Waiting for your assistant to pick the clips"
+            await self.task_repo.update_task_status(
+                self.db, task_id, AWAITING_SELECTION, progress=50,
+                progress_message=message, expected_statuses=["processing"],
+            )
+            if progress_callback:
+                await progress_callback(50, message, AWAITING_SELECTION)
+            logger.info("Task %s is waiting for an external clip selection", task_id)
+            return {"task_id": task_id, "status": AWAITING_SELECTION, "clips": []}
         except Exception as e:
             logger.error(f"Error processing task {task_id}: {e}")
             # Clear failed writes before recording the terminal error state.
@@ -1047,6 +1076,8 @@ class TaskService(ClipEditingMixin):
                 error_code = e.code
             elif isinstance(e, YouTubeGeoRestrictedError):
                 error_code = "youtube_geo_restricted"
+            elif is_age_restricted_error(e):
+                error_code = "youtube_age_restricted"
             elif "download" in message or "youtube" in message:
                 error_code = "download_error"
             elif "analysis" in message:

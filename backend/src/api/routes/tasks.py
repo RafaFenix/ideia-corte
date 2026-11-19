@@ -7,6 +7,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from starlette.background import BackgroundTask
 from ...media_storage import MediaStorage, STORAGE_ERRORS, is_s3, media_work
+from sqlalchemy.exc import TimeoutError as PoolTimeout
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 from pathlib import Path
@@ -28,6 +29,12 @@ from ... import clip_archive
 from ...repositories.generation_allowance_guard import generation_allowance_guard, GenerationAllowanceBusy
 from ...repositories.task_run_guard import task_run_guard, TaskRunBusy
 from ...repositories.task_repository import TaskRepository
+from ...repositories.task_idempotency_repository import (
+    TaskIdempotencyConflict,
+    TaskIdempotencyReplay,
+    find_task_for_key,
+    claim_key,
+)
 from ...database import get_db
 from ...database import AsyncSessionLocal
 from ...services.task_service import TaskService
@@ -44,10 +51,11 @@ from ...source_identity import (
     source_key_for_url,
 )
 from ...workers.job_queue import JobQueue
+from ..pool_timeout import pool_busy
 from ...workers.progress import ProgressTracker
 from ...config import get_config
 from ...youtube_utils import async_get_youtube_video_info, canonical_youtube_url, has_verified_duration
-from ...youtube_proxy import YouTubeGeoRestrictedError
+from ...youtube_proxy import YouTubeAgeRestrictedError, YouTubeGeoRestrictedError
 from ...stream_source import (
     PREFLIGHT_DEADLINE_SECONDS as STREAM_PREFLIGHT_DEADLINE_SECONDS,
     StreamDurationUnavailableError,
@@ -65,6 +73,11 @@ from ...video_utils import VALID_OUTPUT_FORMATS
 from ...admin_auth import require_admin_user, user_is_admin
 from ...source_submission import SourceAttempt
 from ...workflows.contracts import workflow_spec_from_task
+from ...external_selection import (
+    AWAITING_SELECTION, EXTERNAL, SELECTION_MODE_KEY, is_external, selection_limits,
+    transcript_page, validate_selection,
+)
+from ...repositories.task_checkpoint_repository import TaskCheckpointRepository, checkpoint_input_key
 from ...workflows.errors import WorkflowRequestError
 from ...workflows.options import (
     check_source_duration,
@@ -114,6 +127,8 @@ async def _preflight_youtube_source(url: str, duration_limit: int) -> Dict[str, 
         )
         if metadata is None:
             raise ValueError("No metadata provider answered")
+        if metadata.get("age_restricted"):
+            raise YouTubeAgeRestrictedError()
         if not has_verified_duration(metadata):
             raise _DurationUnavailable()
         duration = metadata["duration"]
@@ -124,6 +139,14 @@ async def _preflight_youtube_source(url: str, duration_limit: int) -> Dict[str, 
             status_code=422,
             detail={
                 "code": "YOUTUBE_GEO_RESTRICTED",
+                "message": f"{exc} No minutes were used.",
+            },
+        ) from None
+    except YouTubeAgeRestrictedError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "YOUTUBE_AGE_RESTRICTED",
                 "message": f"{exc} No minutes were used.",
             },
         ) from None
@@ -569,6 +592,42 @@ def _queued_upload_task(task_id: str, job_id: str | None) -> Dict[str, Any]:
     }
 
 
+def _task_idempotency(request: Request, options: Dict[str, Any], title: Any) -> tuple[str, str] | None:
+    """``(key, request_hash)`` when the client sent an Idempotency-Key.
+
+    The hash covers the normalized options and title, so a retry that only
+    spells an option differently is still the same request.
+    """
+    key = _request_idempotency_key(request)
+    if not key:
+        return None
+    payload = json.dumps({"options": options, "title": title}, sort_keys=True, separators=(",", ":"), default=str)
+    return key, hashlib.sha256(payload.encode()).hexdigest()
+
+
+async def _replay_task(db, user_id: str, idempotency: tuple[str, str]) -> Dict[str, Any] | None:
+    """The response for a task this key already created, if any."""
+    try:
+        row = await find_task_for_key(db, user_id, *idempotency)
+    except TaskIdempotencyConflict as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "IDEMPOTENCY_KEY_REUSED", "message": str(exc)},
+        ) from None
+    return None if row is None else _queued_upload_task(row.id, row.job_id)
+
+
+async def _bind_existing_task(db, user_id, idempotency, response):
+    """Remember a successful deduplication even after the active task finishes."""
+    if not idempotency:
+        return response
+    if await claim_key(db, user_id, *idempotency, response["task_id"]):
+        await db.commit()
+        return response
+    # Another request already bound this key. Its hash must match.
+    return await _replay_task(db, user_id, idempotency) or response
+
+
 @router.post("/")
 async def create_task(request: Request, db: AsyncSession = Depends(get_db)):
     """
@@ -632,6 +691,16 @@ async def _create_task(request: Request, db: AsyncSession, attempt: SourceAttemp
         error = workflow_not_available()
         raise HTTPException(status_code=error.status, detail=error.to_detail())
     workflow_options = workflow_spec.options.to_json()
+    selection = data.get("selection", "auto")
+    if selection not in ("auto", EXTERNAL):
+        raise HTTPException(status_code=422, detail="selection must be auto or external")
+    external = selection == EXTERNAL
+    if external:
+        # v1: the user's own assistant picks plain highlights, on self-host or for admins.
+        if workflow_spec.workflow != "highlights":
+            raise HTTPException(status_code=400, detail="External selection supports the highlights workflow only")
+        if not await _external_selection_allowed(db, user_id):
+            raise HTTPException(status_code=403, detail="External selection is available on self-hosted servers and to admins")
     cleanup_settings = new_task_cleanup_settings(data)
     if not raw_source or not raw_source.get("url"):
         raise HTTPException(status_code=400, detail="Source URL is required")
@@ -654,11 +723,23 @@ async def _create_task(request: Request, db: AsyncSession, attempt: SourceAttemp
         # and instructions never leave the process.
         upload_options["workflow"] = workflow_spec.workflow
         upload_options["workflow_options"] = workflow_options
+    if external:
+        upload_options["selection"] = EXTERNAL
     upload_request_key = _upload_request_key(request, raw_source["url"], upload_options)
+    # A keyed request answers with the task the key made, however long ago
+    # within retention. Unkeyed upload retries keep the short-window dedupe.
+    idempotency = _task_idempotency(request, upload_options, raw_source.get("title"))
+    if idempotency and db is not None:
+        replay = await _replay_task(db, user_id, idempotency)
+        if replay is not None:
+            return replay
     if upload_request_key and db is not None:
         existing = await TaskRepository.find_recent_upload_task(db, user_id, upload_request_key)
         if existing is not None:
-            return _queued_upload_task(existing.id, existing.job_id)
+            return await _bind_existing_task(
+                db, user_id, idempotency,
+                _queued_upload_task(existing.id, existing.job_id),
+            )
 
     # Same video already queued or rendering: hand back that task. This is
     # before preflight and before any minute charge. Callers that unit-test
@@ -669,7 +750,10 @@ async def _create_task(request: Request, db: AsyncSession, attempt: SourceAttemp
         if source_key:
             existing = await TaskRepository.find_active_source_task(db, user_id, source_key)
             if existing is not None:
-                return duplicate_source_response(str(existing.id), existing.job_id)
+                return await _bind_existing_task(
+                    db, user_id, idempotency,
+                    duplicate_source_response(str(existing.id), existing.job_id),
+                )
 
     try:
         billing_service = BillingService(db)
@@ -716,6 +800,12 @@ async def _create_task(request: Request, db: AsyncSession, attempt: SourceAttemp
         async with generation_allowance_guard(
             db, user_id, enabled=runtime_config.monetization_enabled
         ):
+            if idempotency:
+                # Admissions are serialized here. A retry that waited on the
+                # original must get its task, not a limit error after its charge.
+                replay = await _replay_task(db, user_id, idempotency)
+                if replay is not None:
+                    return replay
             await billing_service.assert_can_create_task(user_id, duration_seconds)
             async with source_admission_lock(db, user_id, source_key):
                 if source_key:
@@ -723,28 +813,38 @@ async def _create_task(request: Request, db: AsyncSession, attempt: SourceAttemp
                         db, user_id, source_key
                     )
                     if existing is not None:
-                        return duplicate_source_response(str(existing.id), existing.job_id)
-                # Create task while the source lock is held, so a second
-                # request waits and then finds this row instead of charging.
-                task_id = await task_service.create_task_with_source(
-                    user_id=user_id,
-                    url=raw_source["url"],
-                    title=source_title,
-                    font_family=font_family,
-                    font_size=font_size,
-                    font_color=font_color,
-                    caption_template=caption_template,
-                    include_broll=include_broll,
-                    processing_mode=processing_mode,
-                    source_duration_seconds=math.ceil(duration_seconds),
-                    upload_request_key=upload_request_key,
-                    workflow=workflow_spec.workflow,
-                    workflow_options=workflow_options,
-                )
+                        return await _bind_existing_task(
+                            db, user_id, idempotency,
+                            duplicate_source_response(str(existing.id), existing.job_id),
+                        )
+                try:
+                    task_id = await task_service.create_task_with_source(
+                        user_id=user_id,
+                        url=raw_source["url"],
+                        title=source_title,
+                        font_family=font_family,
+                        font_size=font_size,
+                        font_color=font_color,
+                        caption_template=caption_template,
+                        include_broll=include_broll,
+                        processing_mode=processing_mode,
+                        source_duration_seconds=math.ceil(duration_seconds),
+                        upload_request_key=upload_request_key,
+                        workflow=workflow_spec.workflow,
+                        workflow_options=workflow_options,
+                        **({"idempotency": idempotency} if idempotency else {}),
+                    )
+                except TaskIdempotencyReplay:
+                    # A concurrent request with this key committed its task first
+                    # (self-hosted creates aren't serialized). Ours rolled back.
+                    replay = await _replay_task(db, user_id, idempotency)
+                    if replay is None:
+                        raise
+                    return replay
             if getattr(task_service, "reused_upload_task", False):
-                return _queued_upload_task(
+                return await _bind_existing_task(db, user_id, idempotency, _queued_upload_task(
                     task_id, getattr(task_service, "reused_upload_job_id", None)
-                )
+                ))
 
             try:
                 # Persist retry options before submitting the job; Redis remains a legacy cache.
@@ -757,6 +857,7 @@ async def _create_task(request: Request, db: AsyncSession, attempt: SourceAttemp
                             "clip_length": clip_length,
                             "enqueued_at": datetime.now(timezone.utc).isoformat(),
                             **({"source_key": source_key} if source_key else {}),
+                            **({SELECTION_MODE_KEY: EXTERNAL} if external else {}),
                             **_stream_resolution_metadata(stream_metadata),
                         },
                         source_url=raw_source["url"],
@@ -828,6 +929,10 @@ async def _create_task(request: Request, db: AsyncSession, attempt: SourceAttemp
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except BillingLimitExceeded as e:
+        if idempotency and db is not None:
+            replay = await _replay_task(db, user_id, idempotency)
+            if replay is not None:
+                return replay
         raise HTTPException(
             status_code=402,
             detail={
@@ -864,7 +969,10 @@ async def get_billing_summary(request: Request, db: AsyncSession = Depends(get_d
 async def get_workflows(request: Request, db: AsyncSession = Depends(get_db)):
     """What the authenticated user can make on this platform, with each workflow's limits."""
     user_id = await _get_user_id_from_headers(request, db)
-    return workflows_info(await allowed_workflows(db, user_id, platform=client_platform(request)))
+    info = workflows_info(await allowed_workflows(db, user_id, platform=client_platform(request)))
+    # Whether "Claude (subscription)" picks may be offered (selection: "external").
+    info["external_selection"] = await _external_selection_allowed(db, user_id)
+    return info
 
 
 @router.get("/shared/{share_token}")
@@ -1026,7 +1134,7 @@ async def get_task_progress_sse(task_id: str, request: Request):
         }
 
         # If task is already completed or error, close connection
-        if task.get("status") in ["completed", "error", "cancelled"]:
+        if task.get("status") in ["completed", "error", "cancelled", AWAITING_SELECTION]:
             yield {"event": "close", "data": json.dumps({"status": task.get("status")})}
             return
 
@@ -1047,7 +1155,7 @@ async def get_task_progress_sse(task_id: str, request: Request):
                     yield {"event": event_type, "data": json.dumps(progress_data)}
 
                     # Close connection if task is done
-                    if progress_data.get("status") in ["completed", "error", "cancelled"]:
+                    if progress_data.get("status") in ["completed", "error", "cancelled", AWAITING_SELECTION]:
                         yield {
                             "event": "close",
                             "data": json.dumps({"status": progress_data.get("status")}),
@@ -1201,6 +1309,8 @@ async def get_clip_file(
         )
     except HTTPException:
         raise
+    except PoolTimeout:
+        raise pool_busy(request) from None
     except Exception as e:
         logger.error(f"Error serving clip file: {e}")
         raise HTTPException(status_code=500, detail=f"Error serving clip file: {str(e)}")
@@ -1569,6 +1679,8 @@ async def export_clip(
         )
     except HTTPException:
         raise
+    except PoolTimeout:
+        raise pool_busy(request) from None
     except Exception as e:
         logger.error(f"Error exporting clip: {e}")
         raise HTTPException(status_code=500, detail=f"Error exporting clip: {str(e)}")
@@ -1604,7 +1716,7 @@ async def cancel_task(
             "cancelled",
             progress=0,
             progress_message="Cancelled by user",
-            expected_statuses=["queued", "processing"],
+            expected_statuses=["queued", "processing", AWAITING_SELECTION],
         )
 
         return {"message": "Task cancellation requested"}
@@ -1636,6 +1748,18 @@ async def resume_task(
     task_id: str, request: Request, db: AsyncSession = Depends(get_db)
 ):
     """Retry a cancelled or errored task while preserving completed clips."""
+    return await _requeue_task(task_id, request, db)
+
+
+async def _requeue_task(
+    task_id: str,
+    request: Request,
+    db: AsyncSession,
+    *,
+    allowed_statuses: tuple = ("cancelled", "error"),
+    before_queue=None,
+):
+    """Queue a task's processing job again; ``before_queue(task)`` runs under the run guard."""
     try:
         task_service = TaskService(db)
         task = await _require_task_owner(request, task_service, db, task_id)
@@ -1644,7 +1768,9 @@ async def resume_task(
             task = await task_service.task_repo.get_task_by_id(db, task_id)
             if task.get("status") == "queued":
                 return {"message": "Task already queued"}
-            if task.get("status") not in ["cancelled", "error"]:
+            if task.get("status") not in allowed_statuses:
+                if AWAITING_SELECTION in allowed_statuses:
+                    raise HTTPException(status_code=409, detail="Task is not waiting for a clip selection")
                 raise HTTPException(
                     status_code=400,
                     detail="Only cancelled/error/queued tasks can be retried",
@@ -1688,6 +1814,8 @@ async def resume_task(
                 db, task["user_id"], enabled=get_config().monetization_enabled
             ):
                 await BillingService(db).assert_can_resume_task(task["user_id"], task_id)
+                if before_queue is not None:
+                    await before_queue(task)
 
                 try:
                     runtime_config = get_config()
@@ -1762,6 +1890,143 @@ async def resume_task(
     except Exception as e:
         logger.error(f"Error retrying generation: {e}")
         raise HTTPException(status_code=500, detail=f"Error retrying generation: {str(e)}")
+
+
+async def _external_selection_allowed(db: Optional[AsyncSession], user_id: str) -> bool:
+    """External selection is a self-host feature, plus admins on a hosted server."""
+    return get_config().self_host or (db is not None and await user_is_admin(db, user_id))
+
+
+SELECTION_CLAIMED_PROGRESS = 55
+
+
+@router.post("/{task_id}/selection/claim")
+async def claim_task_selection(
+    task_id: str, request: Request, db: AsyncSession = Depends(get_db)
+):
+    """A local selector took the task. Called again while it works: ``updated_at`` is its heartbeat."""
+    task_service = TaskService(db)
+    await _require_task_owner(request, task_service, db, task_id)
+    claimed = await task_service.task_repo.update_task_status(
+        db, task_id, AWAITING_SELECTION, progress=SELECTION_CLAIMED_PROGRESS,
+        progress_message="Claude is picking the clips",
+        expected_statuses=[AWAITING_SELECTION],
+    )
+    if claimed is False:
+        raise HTTPException(status_code=409, detail="Task is not waiting for a clip selection")
+    return {"status": AWAITING_SELECTION, "claimed": True}
+
+
+@router.post("/{task_id}/selection/fail")
+async def fail_task_selection(
+    task_id: str, request: Request, db: AsyncSession = Depends(get_db)
+):
+    """The selector gave up: the task fails with its message; Retry brings it back to awaiting_selection."""
+    data = await _read_json_object(request)
+    message = str(data.get("message") or "").strip()[:500] or "Claude could not pick the clips."
+    task_service = TaskService(db)
+    await _require_task_owner(request, task_service, db, task_id)
+    failed = await task_service.task_repo.update_task_status(
+        db, task_id, "error", progress=0, progress_message=message,
+        expected_statuses=[AWAITING_SELECTION],
+    )
+    if failed is False:
+        raise HTTPException(status_code=409, detail="Task is not waiting for a clip selection")
+    await task_service.task_repo.update_task_runtime_metadata(
+        db, task_id, error_code="selection_failed", completed_at=datetime.utcnow()
+    )
+    return {"status": "error", "error_code": "selection_failed"}
+
+
+async def _selection_checkpoint(db: AsyncSession, task: Dict[str, Any]):
+    """The task's checkpoint, read with the same input key the worker wrote it under."""
+    metadata = await _load_task_source_metadata(task["id"], db=db)
+    if not is_external(metadata):
+        raise HTTPException(status_code=400, detail="Task was not created with selection=external")
+    config = get_config()
+    clip_length = normalize_clip_length(metadata.get("clip_length"))
+    input_key = checkpoint_input_key(
+        task.get("source_url") or metadata.get("url") or "",
+        task.get("source_type") or metadata.get("source_type") or "",
+        task.get("processing_mode") or config.default_processing_mode,
+        clip_length,
+        config,
+    )
+    checkpoint = await TaskCheckpointRepository.get(db, task["id"], input_key)
+    if not checkpoint.get("transcript"):
+        raise HTTPException(status_code=409, detail="Transcript is not ready yet")
+    # Same clip ceiling the render applies (fast mode has its own cap).
+    max_clips = config.max_clips
+    if (task.get("processing_mode") or config.default_processing_mode) == "fast":
+        max_clips = min(max_clips, config.fast_mode_max_clips)
+    return checkpoint, input_key, clip_length, max_clips
+
+
+@router.get("/{task_id}/transcript")
+async def get_task_transcript(
+    task_id: str,
+    request: Request,
+    offset: int = 0,
+    limit: int = 200,
+    words: bool = False,
+    db: AsyncSession = Depends(get_db),
+):
+    """Timestamped transcript lines of an external-selection task, paginated."""
+    task_service = TaskService(db)
+    task = await _require_task_owner(request, task_service, db, task_id)
+    if task.get("status") not in (AWAITING_SELECTION, "completed"):
+        raise HTTPException(status_code=409, detail="Transcript is available once the task is awaiting_selection")
+    checkpoint, _, clip_length, max_clips = await _selection_checkpoint(db, task)
+    transcript = checkpoint["transcript"]
+    transcript_data = checkpoint.get("transcript_data") or {}
+    return {
+        "task_id": task_id,
+        "status": task.get("status"),
+        "language": transcript_data.get("language_code"),
+        "limits": selection_limits(transcript, clip_length, max_clips),
+        **transcript_page(transcript, transcript_data, offset, limit, words),
+    }
+
+
+@router.post("/{task_id}/selection", status_code=202)
+async def submit_task_selection(
+    task_id: str, request: Request, db: AsyncSession = Depends(get_db)
+):
+    """Accept the clips an MCP client picked and render them through the normal pipeline."""
+    data = await _read_json_object(request)
+    items = data.get("segments")
+    if not isinstance(items, list) or not items:
+        raise HTTPException(status_code=422, detail="segments must be a non-empty list")
+    if len(items) > 50:
+        raise HTTPException(status_code=422, detail="At most 50 segments per submission")
+    task_service = TaskService(db)
+    task = await _require_task_owner(request, task_service, db, task_id)
+    if task.get("status") != AWAITING_SELECTION:
+        raise HTTPException(status_code=409, detail="Task is not waiting for a clip selection")
+    checkpoint, input_key, clip_length, max_clips = await _selection_checkpoint(db, task)
+    segments, accepted, rejected = validate_selection(
+        items, checkpoint["transcript"], clip_length, max_clips
+    )
+    if not segments:
+        raise HTTPException(status_code=422, detail={"accepted": [], "rejected": rejected})
+
+    async def save_selection(_task: Dict[str, Any]) -> None:
+        # Written under the run guard after the status re-check, so a losing
+        # concurrent submission never overwrites the plan that was queued.
+        await TaskCheckpointRepository.save(db, task_id, input_key, {
+            "analysis": {"summary": None, "key_topics": [], "most_relevant_segments": segments},
+            "candidates": None,
+            "segments": None,
+        })
+
+    result = await _requeue_task(
+        task_id, request, db,
+        allowed_statuses=(AWAITING_SELECTION,),
+        before_queue=save_selection,
+    )
+    if not result.get("job_id"):
+        raise HTTPException(status_code=409, detail="Task is not waiting for a clip selection")
+    return {"status": "queued", "job_id": result["job_id"], "accepted": accepted, "rejected": rejected}
 
 
 @router.get("/dead-letter/list")

@@ -8,6 +8,7 @@ import { useLocale, useTranslations } from "next-intl";
 import { toast } from "sonner";
 import { useTaskProgress } from "@/hooks/use-task-progress";
 import { StatusBadge, ACTIVE_TASK_STATUSES } from "@/components/app/status-badge";
+import { claudeSelectorState } from "@/lib/claude-selector";
 import { getClipUrl, requestAction, EXPORT_PRESETS } from "@/lib/clip-actions";
 import { clipExportFilePath, pollClipExport, triggerFileDownload } from "@/lib/clip-export";
 import { downloadAllClips } from "@/lib/clip-archive";
@@ -118,6 +119,7 @@ interface Clip extends WorkflowClipFields {
   hook_title: string | null;
 }
 
+const SELECTION_POLL_MS = 10_000;
 interface TaskDetails extends WorkflowTaskFields {
   id: string;
   user_id: string;
@@ -195,6 +197,14 @@ export default function TaskPage() {
   const { data: session } = useSession();
   const [task, setTask] = useState<TaskDetails | null>(null);
   const failureCode = task?.status === "error" && isWorkflowErrorCode(task.error_code) ? task.error_code : null;
+  // Source failures a retry can't fix get their own explanation.
+  const failedBody = task?.error_code === "youtube_age_restricted"
+    ? t("failedBodyAgeRestricted")
+    : task?.error_code === "youtube_geo_restricted"
+      ? t("failedBodyGeoRestricted")
+      : task?.error_code === "selection_failed" && task.progress_message
+        ? task.progress_message
+        : t("failedBody");
   // Next steps on the failure screen stay inside what this user may make.
   const workflowsInfo = useWorkflowsInfo(Boolean(failureCode));
   const [clips, setClips] = useState<Clip[]>([]);
@@ -404,6 +414,15 @@ export default function TaskPage() {
 
     fetchTaskData();
   }, [params.id, fetchTaskStatus]);
+
+  // The progress stream closes in awaiting_selection; the local Claude selector's
+  // claim and heartbeat only show up by polling.
+  const awaitingSelection = task?.status === "awaiting_selection";
+  useEffect(() => {
+    if (!awaitingSelection) return;
+    const timer = window.setInterval(() => void fetchTaskStatus(0, 0, true), SELECTION_POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [awaitingSelection, fetchTaskStatus]);
 
   useEffect(() => {
     const loadFonts = async () => {
@@ -934,7 +953,7 @@ export default function TaskPage() {
 
           {!readOnly && (
           <div className="flex shrink-0 items-center gap-2">
-            {isActive && (
+            {(isActive || task.status === "awaiting_selection") && (
               <Button size="sm" variant="outline" disabled={pendingAction !== null}
                 onClick={() => void runAction("cancel", async () => {
                   await requestAction(`${taskApiUrl}/${task.id}/cancel`, "POST");
@@ -1010,6 +1029,15 @@ export default function TaskPage() {
           </div>
         ) : !task ? (
           <div className="flex min-h-[50vh] items-center justify-center"><Loader2 className="size-5 animate-spin text-muted-foreground" /></div>
+        ) : task.status === "awaiting_selection" && clips.length === 0 ? (
+          (() => {
+            const selectorState = claudeSelectorState(task);
+            return selectorState === "working" ? (
+              <EmptyState icon={<Loader2 className="size-7 animate-spin" />} title={t("claudePickingTitle")} body={t("claudePickingBody")} />
+            ) : (
+              <EmptyState icon={<PauseCircle className="size-7" />} title={t(`claudeSelector.${selectorState}.title`)} body={t(`claudeSelector.${selectorState}.body`)} />
+            );
+          })()
         ) : task.status === "cancelled" && clips.length === 0 ? (
           <EmptyState icon={<PauseCircle className="size-7" />} title={t("cancelledTitle")} body={t("cancelledBody")} />
         ) : failureCode ? (
@@ -1027,7 +1055,7 @@ export default function TaskPage() {
             onResume={handleResume}
           />
         ) : task.status === "error" && clips.length === 0 ? (
-          <EmptyState tone="error" icon={<AlertCircle className="size-7" />} title={t("failedTitle")} body={t("failedBody")}>
+          <EmptyState tone="error" icon={<AlertCircle className="size-7" />} title={t("failedTitle")} body={failedBody}>
             <Button asChild variant="outline"><Link href="/"><ArrowLeft className="size-4" />{t("backHome")}</Link></Button>
           </EmptyState>
         ) : clips.length === 0 ? (
@@ -1070,7 +1098,7 @@ export default function TaskPage() {
             {task.status === "error" && (
               <div role="status" className="mb-6 rounded-lg border border-destructive/20 bg-destructive/5 p-4">
                 <p className="font-medium">{t("failedTitle")}</p>
-                <p className="mt-1 text-sm text-muted-foreground">{t("failedBody")}</p>
+                <p className="mt-1 text-sm text-muted-foreground">{failedBody}</p>
               </div>
             )}
                         {workflow === "topic" && topicName && (

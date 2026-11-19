@@ -21,6 +21,7 @@ from ..media.render_ranges import burned_hook_title
 from ..editor_document import (
     CaptionStyle,
     EditDocument,
+    effective_framing,
     atomic_json,
     editor_dir,
     render_document,
@@ -31,6 +32,7 @@ from ..editor_state import (
     ensure_session,
     get_store,
 )
+from ..stream_transfer import run_stream_download
 from ..utils.async_helpers import run_in_thread
 from ..media_storage import MediaStorage, STORAGE_ERRORS, media_work
 from ..stream_source import download_stream_sections
@@ -229,7 +231,7 @@ def generated_emphasis(words: list[dict], task: dict) -> set[int]:
 
 
 # Layouts that are a composed frame, not a crop the editor can rebuild.
-PRESERVED_LAYOUT_KINDS = frozenset({"split", "stack", "reaction", "overlap"})
+PRESERVED_LAYOUT_KINDS = frozenset({"split", "stack", "reaction", "overlap", "interview"})
 # Plans kept beside the uncropped source as layout.mp4 ("Auto layout"), so the
 # studio opens on the generated framing and manual crops still start from the
 # full frame: content fits, the compositor, and the tracked face/speaker crops.
@@ -472,6 +474,7 @@ def upgrade_document(
         captions.setdefault("uppercase", bool(template.get("uppercase")))
     return {
         **document,
+        "segments": [{**s, "framing": s.get("framing")} for s in document["segments"]],
         "captions": captions,
         "hookTitle": document.get("hookTitle", (burned_hook_title(clip) or "")[:200]),
         # Drafts saved before the editor had B-roll pick up the generated clip's.
@@ -624,7 +627,7 @@ async def _download_editor_source(service, task_id: str, task: dict, ranges: lis
             )
             raise EditorPrepareError(youtube_download_failure(download_errors))
         return Path(downloaded)
-    return await run_in_thread(
+    return await run_stream_download(
         download_stream_sections, source_url,
         [{"start_time": start, "end_time": end} for start, end in ranges],
         task.get("source_duration_seconds"), task_id,
@@ -945,6 +948,10 @@ async def export_editor(ctx, task_id: str, clip_id: str, filename: str, job_id: 
                 has_layout=bool(session["asset"].get("hasLayout")),
                 version=session["asset"].get("mediaVersion"),
             )
+            if (session["asset"].get("hasLayout") and document.framing.aspect == "vertical"
+                    and any(effective_framing(document, s).fit == "auto" for s in document.segments)
+                    and not (directory / "layout.mp4").exists()):
+                raise ValueError("The generated layout is unavailable. Prepare the editing copy again.")
             broll_files = await document_footage(document)
             await run_in_thread(
                 render_document,
@@ -1035,6 +1042,8 @@ async def combine_editor(ctx, task_id: str, clip_id: str, filename: str, job_id:
             )
             commands += ["-i", str(source_dir / "clean.mp4")]
             document = EditDocument.model_validate(entry["document"])
+            if any(s.framing is not None for s in document.segments):
+                raise ValueError("Combining personalized framing is not available yet")
             # Each draft's B-roll stays editable in the combined clip.
             all_broll += rebased_broll(document, cursor)
             entry_words = [

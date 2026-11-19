@@ -328,3 +328,30 @@ async def test_a_truncated_session_is_reported(client, editor_store, monkeypatch
 
     monkeypatch.setattr(clip_source_map, "load_clip_source_ranges", lambda _path: [(0.0, 2.0)])
     assert "sourceIncomplete" not in (await http.get("/tasks/task/clips/clip/editor")).json()
+
+
+async def test_segment_framing_roundtrip_revision_and_combine_guard(client):
+    http, _, doc, _ = client
+    doc["segments"][0]["framing"] = {"fit": "cover", "zoom": 1.2, "x": .1, "y": .5}
+    response = await http.patch("/tasks/task/clips/clip/editor", json={"basis": "clip.mp4", "revision": 0, "document": doc})
+    assert response.json()["revision"] == 1
+    state = (await http.get("/tasks/task/clips/clip/editor")).json()
+    assert state["draft"]["revision"] == 1
+    assert state["draft"]["document"]["segments"][0]["framing"] == doc["segments"][0]["framing"]
+    response = await http.post("/tasks/task/editor/combine", json={"clip_ids": ["clip", "other"]})
+    assert response.status_code == 400
+    assert "personalized framing" in response.json()["detail"]
+    assert not editor.JobQueue.enqueue_job.await_count
+
+
+async def test_legacy_framing_load_does_not_save_or_increment_revision(client, editor_store):
+    http, _, _, _ = client
+    session = next(iter(editor_store.sessions.values()))
+    for doc in [session["draft"], session["original"]]:
+        doc["segments"][0].pop("framing", None)
+        doc["framing"]["x"] = .2
+    state = (await http.get("/tasks/task/clips/clip/editor")).json()
+    assert state["draft"]["revision"] == session["revision"] == 0
+    assert "framing" not in session["draft"]["segments"][0]
+    assert state["draft"]["document"]["segments"][0]["framing"] is None
+    assert state["draft"]["document"]["framing"]["x"] == .2

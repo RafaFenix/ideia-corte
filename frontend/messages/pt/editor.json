@@ -126,7 +126,18 @@
     "center": "Centralizar assunto",
     "landscapeHint": "Este clipe contém detalhes em toda a largura. A versão horizontal mantém a leitura sem cortar conteúdo.",
     "useLandscape": "Usar versão horizontal",
-    "autoLayout": "Layout gerado"
+    "autoLayout": "Layout gerado",
+    "scope": "Aplicar enquadramento",
+    "thisSegment": "Aplicar a este trecho",
+    "wholeClip": "Aplicar a todo o clipe",
+    "replaceAll": "Substitui os enquadramentos personalizados de todos os trechos.",
+    "custom": "Enquadramento personalizado",
+    "inherited": "Herdando enquadramento do clipe",
+    "inherit": "Usar enquadramento do clipe",
+    "clipAspect": "Proporção do clipe",
+    "autoHelp": "Auto ajusta a composição gerada. Escolha Preencher ou Ajustar para recuperar áreas fora do recorte automático. Composições divididas ou empilhadas só podem ser reposicionadas por inteiro.",
+    "loadingLayout": "Preparando layout gerado…",
+    "combineBlocked": "Combinar trechos personalizados ainda não está disponível. Exporte ou use o enquadramento do clipe."
   },
   "audioPanel": {
     "title": "Áudio",

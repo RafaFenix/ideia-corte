@@ -28,6 +28,8 @@ By default it talks to the **official hosted SupoClip API** at
 | `supoclip_download_clip` | ✓ | Save a clip's MP4 to disk |
 | `supoclip_export_clip` | ✓ | Re-encode + save with a platform preset (tiktok/reels/shorts) |
 | `supoclip_cancel_task` / `supoclip_resume_task` / `supoclip_delete_task` | ✓ | Manage tasks |
+| `supoclip_get_transcript` | ✓ | Read the timestamped transcript of a `selection="external"` task, paginated |
+| `supoclip_submit_selection` | ✓ | Send the clips you picked; the server validates and renders them |
 
 Tools marked ✓ require an API key (or self-host credentials, see below).
 
@@ -47,13 +49,34 @@ The hosted server is at `https://mcp.supoclip.com/mcp` (Streamable HTTP). Send
 your key in the `Authorization` header. In every example below, replace
 `sk_...` with your own key, and put **only the URL** in a client's URL field.
 
-### claude.ai, ChatGPT and other apps with custom connectors
+### Claude, ChatGPT, Grok and other apps with custom connectors
 
 Add `https://mcp.supoclip.com/mcp` as a custom connector. The app sends you to
 supoclip.com to sign in and allow access; no key to copy. Allowing creates an
 API key named after the app (for example "Claude connector"), listed at
 [Settings → API Keys](https://www.supoclip.com/settings/api-keys); revoke it
 there to disconnect. The connection uses your plan's minutes like any key.
+The same page has these steps under "Connect Claude, ChatGPT or Grok". None of
+these apps can prefill a server URL from a link, so paste it yourself.
+
+- **Claude** ([guide](https://claude.com/docs/connectors/custom/add-unlisted)):
+  [Customize → Connectors](https://claude.ai/customize/connectors) → Add → Add
+  custom connector, paste the URL, keep the settings marked Detected (if asked
+  how Claude identifies itself, choose Register automatically), Add, Connect.
+  Free (one custom connector), Pro, Max, Ultra, Team and Enterprise; on Team and
+  Enterprise an Owner adds it under Organization settings → Connectors first.
+- **ChatGPT** ([guide](https://help.openai.com/en/articles/12584461-connecting-custom-mcp-servers-in-chatgpt)):
+  on the web, [Plugins](https://chatgpt.com/plugins) → + → Add custom MCP
+  server, paste the URL under Connection, OAuth, Create as a plugin, then
+  install it. OpenAI offers this on Business, Enterprise and Edu; Pro accounts
+  get read-only tools only, so they can't create tasks.
+- **Grok** ([guide](https://docs.x.ai/grok/connectors)):
+  [grok.com/connectors](https://grok.com/connectors) → New Connector → Custom,
+  paste the URL and sign in. xAI doesn't document which sign-in methods custom
+  connectors support, so this one is not confirmed end to end.
+- **Claude Code** can use the same sign-in instead of a pasted key:
+  `claude mcp add --transport http supoclip https://mcp.supoclip.com/mcp`, then
+  `claude mcp login supoclip` (or `/mcp` inside Claude Code).
 
 ### Claude Code
 
@@ -250,6 +273,23 @@ to try instead), `source_too_short`, `no_story`, `recap_unsupported`,
 `analysis_incomplete`, `plan_failed` and `render_incomplete`
 (use `supoclip_resume_task`). Series clips carry `part_number`; every workflow
 clip carries `workflow_role` and `workflow_meta`.
+
+## Picking the clips yourself (`selection="external"`)
+
+Create a highlights task with `selection="external"` and the server's LLM is never
+called, so no LLM key is needed on the server. After download and transcription the
+task stops in `awaiting_selection` (`supoclip_wait_for_task` returns there). Read the
+transcript with `supoclip_get_transcript` (follow `next_offset`; `limits` gives the
+allowed clip length and how many clips render), then call `supoclip_submit_selection`
+with `[{start, end, hook_title?, reasoning?, scores?, respect_bounds?}]`, best first.
+Bounds snap to transcript lines; the accepted clips render through the normal
+pipeline (9:16, captions, hook title). B-roll is skipped. Available on self-hosted
+servers (`SELF_HOST=true`) and to admins.
+
+To have your own Claude subscription do this automatically from the web app, run
+the local selector (`uv run --directory mcp supoclip-claude-selector`); see
+[docs/claude-selector.md](../docs/claude-selector.md). `SUPOCLIP_MCP_TOOLS=a,b`
+limits any MCP server instance to those tools.
 
 ## Example prompts
 

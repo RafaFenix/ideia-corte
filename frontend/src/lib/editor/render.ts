@@ -4,6 +4,9 @@ import {
   captionAt,
   captionTransform,
   frameRect,
+  effectiveFraming,
+  locate,
+  type Framing,
   hookRange,
   mappedWords,
   outputSize,
@@ -176,6 +179,7 @@ export function drawEditorFrame(
   looks?: Record<string, CaptionLook>,
   broll?: BRollLayer | null,
   textLayers: "all" | "none" = "all",
+  frame: Framing = effectiveFraming(doc, doc.segments[locate(doc, time).index]),
 ) {
   const { width, height } = ctx.canvas,
     fx = doc.effects;
@@ -184,7 +188,7 @@ export function drawEditorFrame(
   ctx.fillRect(0, 0, width, height);
   ctx.save();
   ctx.filter = `brightness(${fx.brightness}%) contrast(${fx.contrast}%) saturate(${fx.saturation}%) blur(${(fx.blur * width) / 1080}px) hue-rotate(${fx.hue}deg)`;
-  draw(frameRect(doc.framing, sourceWidth, sourceHeight, width, height));
+  draw(frameRect(frame, sourceWidth, sourceHeight, width, height));
   ctx.restore();
   if (broll && broll.alpha > 0 && broll.width > 0 && broll.height > 0) {
     // Fill the frame (cover), centred, as the export's scale+crop does.

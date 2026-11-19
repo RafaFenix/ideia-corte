@@ -1,6 +1,9 @@
 import { downloadBlob } from "@/lib/clip-actions";
 import {
   clamp,
+  effectiveFraming,
+  framingSource,
+  visualSegments,
   editDuration,
   footageKey,
   footageUrl,
@@ -21,7 +24,8 @@ export async function exportDraft(
   progress: (value: number) => void,
 ) {
   // Preserve a continuous dissolve (and frame timestamps) through UI splits.
-  doc = { ...doc, segments: renderSegments(doc.segments) };
+  const timing = { ...doc, segments: renderSegments(doc.segments) };
+  const runs = visualSegments(doc);
   const m = await import("mediabunny");
   const size = outputSize(doc, asset.width, asset.height);
   const bitrate = preset === "reels" ? 12_000_000 : 10_000_000;
@@ -38,8 +42,7 @@ export async function exportDraft(
       "This browser cannot encode this video. Choose background export to render it on the server.",
     );
   await loadEditorFont(doc.captions.font);
-  const mediaUrl = asset.hasLayout && doc.framing.fit === "auto" && doc.framing.aspect === "vertical" ? url.replace(/clean\.mp4$/, "layout.mp4") : url;
-  const response = await fetch(mediaUrl, { signal });
+  const response = await fetch(url, { signal });
   if (!response.ok) throw new Error("Could not load the source video.");
   const input = new m.Input({
     source: new m.BlobSource(await response.blob()),
@@ -59,7 +62,8 @@ export async function exportDraft(
   }
   let finalized = false;
   // Stock footage is decoded alongside the clip and drawn under the captions.
-  const pieces = mappedBroll(doc);
+  const pieces = mappedBroll(timing);
+  let layoutInput: InstanceType<typeof m.Input> | null = null;
   const footage = new Map<string, { input: InstanceType<typeof m.Input>; sink: InstanceType<typeof m.VideoSampleSink> }>();
   const endpoint = url.replace(/\/media\/clean\.mp4$/, "");
   try {
@@ -89,6 +93,14 @@ export async function exportDraft(
       throw new Error(
         "This browser cannot decode the source. Use background export.",
       );
+    let layoutVideo: Awaited<ReturnType<typeof input.getPrimaryVideoTrack>> = null;
+    if (runs.some(s => framingSource(effectiveFraming(doc, s), asset.hasLayout) === "layout")) {
+      const response = await fetch(url.replace(/clean\.mp4$/, "layout.mp4"), { signal });
+      if (!response.ok) throw new Error("Could not load the generated layout.");
+      layoutInput = new m.Input({ source: new m.BlobSource(await response.blob()), formats: m.ALL_FORMATS });
+      layoutVideo = await layoutInput.getPrimaryVideoTrack();
+      if (!layoutVideo || !(await layoutVideo.canDecode())) throw new Error("Could not decode the generated layout.");
+    }
     const videoSource = new m.CanvasSource(canvas, { codec: "avc", bitrate });
     output.addVideoTrack(videoSource);
     if (audio && !audioCodec)
@@ -102,8 +114,10 @@ export async function exportDraft(
     const duration = editDuration(doc);
     const renderVideo = async () => {
       let cursor = 0;
-      for (const segment of doc.segments) {
-        const sink = new m.VideoSampleSink(video);
+      for (const segment of runs) {
+        const frame = effectiveFraming(doc, segment);
+        const track = framingSource(frame, asset.hasLayout) === "layout" ? layoutVideo! : video;
+        const sink = new m.VideoSampleSink(track);
         for await (const sample of sink.samples(segment.start, segment.end)) {
           try {
             signal.throwIfAborted();
@@ -146,6 +160,8 @@ export async function exportDraft(
                   sample.draw(ctx, rect.x, rect.y, rect.width, rect.height),
                 asset.captionLooks,
                 layer,
+                "all",
+                frame,
               );
             } finally {
               brollSample?.close();
@@ -165,7 +181,7 @@ export async function exportDraft(
     const renderAudio = async () => {
       if (!audio || !audioSource) return;
       let cursor = 0;
-      for (const segment of doc.segments) {
+      for (const segment of timing.segments) {
         const sink = new m.AudioSampleSink(audio);
         for await (const sample of sink.samples(segment.start, segment.end)) {
           try {
@@ -232,6 +248,7 @@ export async function exportDraft(
   } finally {
     if (!finalized) await output.cancel().catch(() => {});
     input.dispose();
+    layoutInput?.dispose();
     for (const { input: footageInput } of footage.values()) footageInput.dispose();
   }
 }

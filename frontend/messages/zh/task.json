@@ -56,6 +56,8 @@
   "cancelledBody": "准备好后可重试此生成任务。已完成的片段将保留。",
   "failedTitle": "处理失败",
   "failedBody": "处理失败。请重试生成。已完成的片段将保留。",
+  "failedBodyAgeRestricted": "此 YouTube 视频有年龄限制，我们无法下载。请自行下载视频后上传文件。未消耗任何分钟数。",
+  "failedBodyGeoRestricted": "此 YouTube 视频在我们所在地区不可用，我们无法下载。请自行下载视频后上传文件。未消耗任何分钟数。",
   "backHome": "返回首页",
   "noClipsTitle": "没有生成片段",
   "noClipsBody": "生成已完成，但没有产出片段。这段视频可能没有适合剪辑的内容。",
@@ -129,6 +131,8 @@
   "eta": {
     "queued": "正在等待处理",
     "estimating": "正在估算剩余时间…",
+    "stillDownloading": "仍在下载视频…",
+    "minuteRange": "大约还需 {low}–{high} 分钟",
     "underMinute": "不到一分钟",
     "minutes": "大约还需 {count} 分钟"
   },
@@ -280,6 +284,22 @@
       "scenicRoute": "这个视频选了条风景路线，会比平时多花一点时间。",
       "bumps": "路上有点小颠簸，我们正在处理，再给我们一点时间。",
       "slower": "这次的节奏比平时慢一点，我们还在继续努力。"
+    }
+  },
+  "claudePickingTitle": "Claude 正在挑选片段…",
+  "claudePickingBody": "你的 Claude 正在阅读字幕稿，提交片段后即开始渲染。",
+  "claudeSelector": {
+    "starting": {
+      "title": "等待 Claude",
+      "body": "字幕稿已就绪，本地 Claude 选择器马上会接手此任务。"
+    },
+    "off": {
+      "title": "Claude 选择器未运行",
+      "body": "在这台电脑上用 `uv run --directory mcp supoclip-claude-selector` 启动，它会自动接手此任务。"
+    },
+    "stalled": {
+      "title": "Claude 选择器已停止",
+      "body": "它在挑选过程中停止了。用 `uv run --directory mcp supoclip-claude-selector` 重新启动，此任务会继续。"
     }
   }
 }

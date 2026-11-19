@@ -56,6 +56,8 @@
   "cancelledBody": "Retry this generation when you are ready. Your completed clips will be kept.",
   "failedTitle": "Processing Failed",
   "failedBody": "Processing failed. Retry generation to try again. Your completed clips will be kept.",
+  "failedBodyAgeRestricted": "This YouTube video is age-restricted, so we can't download it. Download the video yourself and upload the file instead. No minutes were used.",
+  "failedBodyGeoRestricted": "This YouTube video isn't available in our region, so we can't download it. Download the video yourself and upload the file instead. No minutes were used.",
   "backHome": "Back to Home",
   "noClipsTitle": "No Clips Generated",
   "noClipsBody": "The generation completed but no clips were generated. The video may not have had suitable content for clipping.",
@@ -129,6 +131,8 @@
   "eta": {
     "queued": "Waiting for a worker",
     "estimating": "Estimating time left…",
+    "stillDownloading": "Still downloading your video…",
+    "minuteRange": "About {low}–{high} min left",
     "underMinute": "Less than a minute left",
     "minutes": "About {count} min left"
   },
@@ -280,6 +284,22 @@
       "scenicRoute": "This one's taking the scenic route. It'll be a little longer than usual.",
       "bumps": "A few bumps along the way. We're working through them—just a little more time.",
       "slower": "Things are moving a bit slower than usual. We're still on it."
+    }
+  },
+  "claudePickingTitle": "Claude is picking the clips…",
+  "claudePickingBody": "Your Claude is reading the transcript. Rendering starts as soon as it sends the clips.",
+  "claudeSelector": {
+    "starting": {
+      "title": "Waiting for Claude",
+      "body": "The transcript is ready. The local Claude selector will take this task in a moment."
+    },
+    "off": {
+      "title": "The Claude selector isn't running",
+      "body": "Start it on this computer with `uv run --directory mcp supoclip-claude-selector`; it picks up this task automatically."
+    },
+    "stalled": {
+      "title": "The Claude selector stopped",
+      "body": "It stopped while picking clips. Restart it with `uv run --directory mcp supoclip-claude-selector`; this task will be resumed."
     }
   }
 }

@@ -252,6 +252,41 @@ describe("task page workflows", () => {
     expect(screen.queryByRole("button", { name: "Retry generation" })).not.toBeInTheDocument();
   });
 
+  it("explains an age-restricted YouTube video instead of offering a retry", async () => {
+    serve(task({ status: "error", error_code: "youtube_age_restricted" }), []);
+    renderPage();
+
+    expect(await screen.findByText(/age-restricted, so we can't download it/)).toBeInTheDocument();
+    expect(screen.queryByText(/Retry generation to try again/)).not.toBeInTheDocument();
+  });
+
+  it("shows the external selection failure message", async () => {
+    serve(task({ status: "error", error_code: "selection_failed", progress_message: "The supplied selection contains no valid segments." }), []);
+    renderPage();
+
+    expect(await screen.findByText("The supplied selection contains no valid segments.")).toBeInTheDocument();
+  });
+
+  it.each([
+    ["selection_failed", ""],
+    ["selection_failed", null],
+    ["unknown_error", "Internal diagnostics should not be shown."],
+  ])("uses the generic failure message for %s with progress %s", async (errorCode, progressMessage) => {
+    serve(task({ status: "error", error_code: errorCode, progress_message: progressMessage }), []);
+    renderPage();
+
+    expect(await screen.findByText(/Retry generation to try again/)).toBeInTheDocument();
+    expect(screen.queryByText("Internal diagnostics should not be shown.")).not.toBeInTheDocument();
+  });
+
+  it("keeps the geographic restriction explanation", async () => {
+    serve(task({ status: "error", error_code: "youtube_geo_restricted", progress_message: "Internal diagnostics" }), []);
+    renderPage();
+
+    expect(await screen.findByText(/region|country/i)).toBeInTheDocument();
+    expect(screen.queryByText("Internal diagnostics")).not.toBeInTheDocument();
+  });
+
   it("keeps highlights sorted best first with a top pick", async () => {
     serve(task(), [clip(1, { virality_score: 60 }), clip(2, { virality_score: 90, hook_title: "The best one" })]);
     renderPage();

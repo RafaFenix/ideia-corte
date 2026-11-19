@@ -92,7 +92,8 @@ mcp = _build_mcp()
 ProcessingMode = Literal["fast", "balanced", "quality"]
 OutputFormat = Literal["vertical", "vertical_fit", "vertical_pan", "vertical_split", "original"]
 ExportPreset = Literal["tiktok", "reels", "shorts"]
-TERMINAL_STATES = {"completed", "error", "cancelled"}
+# awaiting_selection: a selection="external" task waits for supoclip_submit_selection.
+TERMINAL_STATES = {"completed", "error", "cancelled", "awaiting_selection"}
 VALID_OUTPUT_FORMATS = {"vertical", "vertical_fit", "vertical_pan", "vertical_split", "original"}
 
 # Mirrors backend/src/workflows/options.py so bad requests fail here with a clear
@@ -419,6 +420,7 @@ async def supoclip_create_clip_task(
     topic: str = "",
     part_count: int = 0,
     instructions: str = "",
+    selection: str = "auto",
 ) -> str:
     """Create a SupoClip task that downloads a video and generates viral short clips.
 
@@ -468,6 +470,12 @@ async def supoclip_create_clip_task(
         topic: The subject to find (workflow='topic' only), max 120 characters.
         part_count: Series parts, 0 = auto or 2-10 (workflow='series' only).
         instructions: Optional editorial guidance for any workflow, max 500 characters.
+        selection: 'auto' (default, the server's AI picks the clips) or 'external'
+            (you pick them: the task stops in status ``awaiting_selection`` after
+            transcription; read it with ``supoclip_get_transcript`` and send your
+            clips with ``supoclip_submit_selection``). External needs no LLM key on
+            the server, works with workflow='highlights' only, and is available on
+            self-hosted servers and to admins. B-roll is skipped in this mode.
 
     Returns:
         str: JSON ``{"task_id": str, "job_id": str, "message": str}`` on success.
@@ -480,6 +488,10 @@ async def supoclip_create_clip_task(
         raise SupoClipError("clip_length must be auto, short, medium, or long")
 
     workflow_fields = _workflow_fields(workflow, topic, part_count, instructions)
+    if selection not in {"auto", "external"}:
+        raise SupoClipError("selection must be auto or external")
+    if selection == "external" and "workflow" in workflow_fields:
+        raise SupoClipError("selection='external' works with workflow='highlights' only.")
 
     normalized_mode = processing_mode if processing_mode in {"fast", "balanced", "quality"} else "fast"
     normalized_format = output_format if output_format in VALID_OUTPUT_FORMATS else "vertical"
@@ -514,6 +526,8 @@ async def supoclip_create_clip_task(
     body["cut_long_pauses"] = bool(cut_long_pauses)
     body["remove_filler_words"] = bool(remove_filler_words)
     body.update(workflow_fields)
+    if selection == "external":
+        body["selection"] = "external"
 
     data = await _client().request("POST", "/tasks/", json_body=body)
     return _json(data)
@@ -660,7 +674,8 @@ async def supoclip_wait_for_task(
     ] = 5,
     ctx: Optional[Context] = None,
 ) -> str:
-    """Poll a task until it finishes (completed/error/cancelled) or times out.
+    """Poll a task until it finishes (completed/error/cancelled), stops in
+    ``awaiting_selection`` (selection='external': pick clips next), or times out.
 
     Convenience wrapper around ``supoclip_get_task`` for the asynchronous
     pipeline. Reports progress while waiting. Requires authentication.
@@ -882,6 +897,85 @@ async def supoclip_resume_task(
 
 
 @mcp.tool(
+    name="supoclip_get_transcript",
+    annotations={
+        "title": "Read Transcript For Selection",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+@tool_errors
+async def supoclip_get_transcript(
+    task_id: Annotated[str, Field(description="A task created with selection='external'.", min_length=1)],
+    offset: Annotated[int, Field(default=0, description="First line to return.", ge=0)] = 0,
+    limit: Annotated[int, Field(default=200, description="Lines per page (max 500).", ge=1, le=500)] = 200,
+    include_words: Annotated[
+        bool, Field(default=False, description="Also return word timings (ms) for this page.")
+    ] = False,
+) -> str:
+    """Read one page of the timestamped transcript of an ``awaiting_selection`` task.
+
+    Read every page (follow ``next_offset`` until it is null) before choosing
+    clips. Each line is ``{i, start, end, start_seconds, end_seconds, text}``;
+    ``limits`` gives the allowed clip duration and how many clips will render.
+    Good clips stand alone: a hook in the first seconds, one complete idea, a payoff.
+
+    Returns:
+        str: JSON ``{"total_lines", "next_offset", "limits", "language", "lines", "words"?}``.
+    """
+    data = await _client().request(
+        "GET",
+        f"/tasks/{task_id}/transcript",
+        params={"offset": offset, "limit": limit, "words": str(include_words).lower()},
+    )
+    return _json(data)
+
+
+@mcp.tool(
+    name="supoclip_submit_selection",
+    annotations={
+        "title": "Submit Clip Selection",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": False,
+        "openWorldHint": True,
+    },
+)
+@tool_errors
+async def supoclip_submit_selection(
+    task_id: Annotated[str, Field(description="A task in status awaiting_selection.", min_length=1)],
+    segments: Annotated[
+        list[dict],
+        Field(
+            description=(
+                "Clips best-first. Each: {start, end} as 'MM:SS' or seconds (use transcript line "
+                "bounds), optional hook_title (3-9 words, transcript language), reasoning, "
+                "scores {hook, engagement, value, shareability} 0-25, respect_bounds (default true)."
+            ),
+            min_length=1,
+            max_length=50,
+        ),
+    ],
+) -> str:
+    """Send your chosen clips; the server validates them and renders through its normal pipeline.
+
+    Bounds snap to the nearest transcript line (within 8s) and must fit the
+    duration in ``limits``; overlapping or extra clips are rejected. If any clip
+    is accepted the task renders those (status ``queued``); a 422 means none
+    was, so fix them and submit again. Then ``supoclip_wait_for_task``.
+
+    Returns:
+        str: JSON ``{"status": "queued", "job_id", "accepted": [...], "rejected": [{index, reason}]}``.
+    """
+    data = await _client().request(
+        "POST", f"/tasks/{task_id}/selection", json_body={"segments": segments}
+    )
+    return _json(data)
+
+
+@mcp.tool(
     name="supoclip_delete_task",
     annotations={
         "title": "Delete Task",
@@ -907,6 +1001,20 @@ async def supoclip_delete_task(
     """
     data = await _client().request("DELETE", f"/tasks/{task_id}")
     return _json(data)
+
+
+def limit_tools(names: Optional[str]) -> None:
+    """``SUPOCLIP_MCP_TOOLS=a,b`` keeps only those tools, so a client sees (and pays
+    context for) nothing else. The local Claude selector exposes three."""
+    keep = {name.strip() for name in (names or "").split(",") if name.strip()}
+    if not keep:
+        return
+    for tool in list(mcp._tool_manager.list_tools()):
+        if tool.name not in keep:
+            mcp.remove_tool(tool.name)
+
+
+limit_tools(os.getenv("SUPOCLIP_MCP_TOOLS"))
 
 
 def main() -> None:

@@ -46,6 +46,7 @@ import {
   clamp,
   outputTime,
   splitSegment,
+  type FramingScope,
   timecode,
   type CaptionStyle,
 } from "@/lib/editor/document";
@@ -117,6 +118,7 @@ export function EditorWorkspace({
   const editor = useEditor(endpoint),
     doc = editor.document,
     asset = editor.asset;
+  const [framingScope, setFramingScope] = useState<FramingScope>("segment");
   const [tab, setTab] = useState<InspectorTab>("captions"),
     [segmentIndex, setSegmentIndex] = useState(0),
     [time, setTime] = useState(0);
@@ -191,8 +193,10 @@ export function EditorWorkspace({
     setCombining(true);
     try {
       await editor.save();
-      for (const id of selected)
-        await readyEditor(`/api/tasks/${taskId}/clips/${id}/editor`);
+      for (const id of selected) {
+        const state = await readyEditor(`/api/tasks/${taskId}/clips/${id}/editor`);
+        if (state.draft.document.segments.some(s => s.framing)) throw new Error(t("framing.combineBlocked"));
+      }
       const result = await editorRequest<{
         id: string;
         anchor_clip_id: string;
@@ -428,14 +432,14 @@ export function EditorWorkspace({
               </ul>
               <div className="space-y-2 border-t p-3">
                 {selected.length >= 2 ? (
-                  <Button size="sm" className="w-full" disabled={combining} onClick={() => void combine()}>
+                  <Button size="sm" className="w-full" disabled={combining || (selected.includes(clip.id) && !!doc?.segments.some(s => s.framing))} onClick={() => void combine()}>
                     {combining ? <Loader2 className="animate-spin" /> : <Layers />}
                     {combining ? t("workspace.combining") : t("workspace.combine", { count: selected.length })}
                   </Button>
                 ) : null}
                 <p className="text-xs text-muted-foreground">
                   {selected.length >= 2
-                    ? t("workspace.combineHint")
+                    ? (selected.includes(clip.id) && doc?.segments.some(s => s.framing) ? t("framing.combineBlocked") : t("workspace.combineHint"))
                     : selected.length === 1
                       ? t("workspace.combineOneMore")
                       : t("workspace.combineEmpty")}
@@ -618,6 +622,7 @@ export function EditorWorkspace({
                 asset={asset}
                 endpoint={endpoint}
                 segmentIndex={index}
+                framingScope={framingScope}
                 select={setSegmentIndex}
                 time={time}
                 onTime={setTime}
@@ -648,6 +653,9 @@ export function EditorWorkspace({
                 tab={tab}
                 setTab={setTab}
                 time={time}
+                segmentIndex={index}
+                framingScope={framingScope}
+                setFramingScope={setFramingScope}
                 editTime={outputTime(doc, Math.min(index, doc.segments.length - 1), time)}
                 seek={seekSource}
                 update={editor.update}
