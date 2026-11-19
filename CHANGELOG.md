@@ -6,6 +6,8 @@ Add a line here when a pull request changes something a user can see. Use **New*
 
 ## 2026-11-19
 
+- **Improved:** Self-hosted workers can opt in to downloading YouTube audio first and only the selected video sections without a proxy, with a shared download limit and reusable cache. ([PR pending](https://github.com/RafaFenix/ideia-corte/compare/feat/upstream-parity...feat/youtube-direct-sections))
+
 - **Under the hood:** The web app and its matching lint configuration now use Next.js 15.5.29. ([#2](https://github.com/RafaFenix/ideia-corte/pull/2))
 - **Fixed:** Uploads whose video length is slow to read now return a clear retry message before the connection times out. MP4 recordings with fragments, including OBS recordings, are measured through their final fragment before checking your minutes and video limit. ([#2](https://github.com/RafaFenix/ideia-corte/pull/2))
 - **Fixed:** Agents waiting for a generation now return within the requested wait time, even when a status request stalls, and keep the last known progress so you can poll again. ([#2](https://github.com/RafaFenix/ideia-corte/pull/2))

@@ -28,6 +28,7 @@ from .youtube_proxy import (
     DownloadBudgetExceeded,
     base_proxy_params,
     download_full_with_proxy,
+    direct_sections_enabled,
     extract_video_info_with_proxy,
     extract_video_info,
     YouTubeDownloadError,
@@ -724,6 +725,9 @@ def _download_youtube_video_with_ytdlp(
 
 def _provider_order(config, *, skip_proxy: bool) -> list[str]:
     """Proxy, API Router, bounded Apify pool, then direct yt-dlp."""
+    if direct_sections_enabled(config):
+        # This opt-in must never escape to a downloader without byte hooks.
+        return [YOUTUBE_DOWNLOAD_PROVIDER_YTDLP]
     order: list[str] = []
     if proxy_configured(config) and not skip_proxy:
         order.append(YOUTUBE_DOWNLOAD_PROVIDER_YTDLP_PROXY)
@@ -801,7 +805,7 @@ def download_youtube_video(
         attempted_providers += 1
         before = job_budget.snapshot()
         try:
-            if provider == YOUTUBE_DOWNLOAD_PROVIDER_YTDLP_PROXY:
+            if provider == YOUTUBE_DOWNLOAD_PROVIDER_YTDLP_PROXY or direct_sections_enabled(config):
                 downloaded_path = download_full_with_proxy(
                     url, video_id, downloader.temp_dir, task_id=task_id, budget=job_budget, quality=quality,
                 )
@@ -828,6 +832,15 @@ def download_youtube_video(
                 return None
             continue
         except Exception as exc:
+            if direct_sections_enabled(config):
+                _note_attempt(provider, video_id, task_id, job_budget, before, outcome="failure", error=str(exc))
+                if errors is not None:
+                    errors.append(public_download_error(exc))
+                raise YouTubeDownloadError(
+                    "Direct YouTube full-file fallback failed with the byte limit enforced; "
+                    "a finished video with native HTTP(S) formats is required. "
+                    + public_download_error(exc)
+                ) from exc
             if is_geo_restricted_error(exc):
                 geo_error = exc
             _note_attempt(provider, video_id, task_id, job_budget, before, outcome="failure", error=str(exc))

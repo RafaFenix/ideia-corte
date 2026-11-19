@@ -1,4 +1,4 @@
-"""yt-dlp downloads through a configurable residential proxy.
+"""Shared yt-dlp audio/section downloads over a proxy or opt-in direct transport.
 
 Section downloads stay on yt-dlp's native HTTP client. ``--download-sections``
 hands the media URL to ffmpeg, and ffmpeg does not route SOCKS proxies and
@@ -232,6 +232,20 @@ def proxy_configured(config=None) -> bool:
     return bool((getattr(runtime, "youtube_proxy_url", "") or "").strip())
 
 
+def direct_sections_enabled(config=None) -> bool:
+    runtime = config or get_config()
+    return not proxy_configured(runtime) and bool(getattr(runtime, "youtube_sections_direct", False))
+
+
+def sections_enabled(config=None) -> bool:
+    runtime = config or get_config()
+    return proxy_configured(runtime) or direct_sections_enabled(runtime)
+
+
+def _transport_provider(options: dict) -> str:
+    return YOUTUBE_DOWNLOAD_PROVIDER_YTDLP_PROXY if options.get("proxy") else "yt_dlp"
+
+
 def capped_height(value: int | None = None, config=None) -> int:
     """Never request above 1080p. Lower env values are honored."""
     runtime = trial_config(config or get_config())
@@ -387,7 +401,7 @@ def base_proxy_params(task_id: Optional[str] = None, video_id: Optional[str] = N
         getattr(runtime, "youtube_proxy_country", "") if country is None else country
     )
     params: dict[str, Any] = {
-        "proxy": render_proxy_url(runtime.youtube_proxy_url, session, country),
+        "proxy": "" if direct_sections_enabled(runtime) else render_proxy_url(runtime.youtube_proxy_url, session, country),
         # yt-dlp treats 0.0.0.0 as "force IPv4" (the -4 flag).
         "source_address": "0.0.0.0",
         "socket_timeout": 30,
@@ -448,6 +462,10 @@ def download_options(
 ) -> dict[str, Any]:
     """Options for a native yt-dlp download. Never sets ``download_ranges``."""
     options = base_proxy_params(task_id, video_id, session_id=session_id, country=country)
+    if direct_sections_enabled():
+        # Bound overshoot to one small native read; no concurrent fragment writes.
+        options.update({"concurrent_fragment_downloads": 1, "buffersize": 64 * 1024,
+                        "noresizebuffer": True, "retries": 0, "fragment_retries": 0})
     options["_youtube_deadline"] = time.monotonic() + max(
         30, getattr(get_config(), "youtube_proxy_timeout_seconds", 300)
     )
@@ -1289,7 +1307,7 @@ def _download_audio_attempt(
         nonlocal logged_failure
         logged_failure = True
         log_youtube_attempt(
-            provider=YOUTUBE_DOWNLOAD_PROVIDER_YTDLP_PROXY,
+            provider=_transport_provider(options),
             video_id=video_id,
             kind=kind,
             outcome="failure",
@@ -1297,6 +1315,17 @@ def _download_audio_attempt(
             task_id=task_id,
             error=str(exc),
         )
+
+    def fetch_audio(fmt):
+        if direct_sections_enabled():
+            if info.get("is_live") or info.get("live_status") == "is_live":
+                raise PartialDownloadUnavailable("Direct audio requires a finished video")
+            if "m3u8" in (fmt.get("protocol") or ""):
+                fmt = expand_hls_format(fmt, options, counter, info.get("duration") or 0)
+                return native_download_format(
+                    options, url, video_id, fmt, dest_stem, resolve_fragments(fmt),
+                )
+        return native_download_format(options, url, video_id, fmt, dest_stem)
 
     try:
         info = extract_video_info(url, options)
@@ -1313,7 +1342,7 @@ def _download_audio_attempt(
             raise YouTubeDownloadError("No audio format is available")
         attempt_started = counter.snapshot()
         try:
-            path = native_download_format(options, url, video_id, fmt, dest_stem)
+            path = fetch_audio(fmt)
         except (DownloadBudgetExceeded, DownloadDeadlineExceeded):
             raise
         except Exception as exc:
@@ -1343,7 +1372,7 @@ def _download_audio_attempt(
             _discard_output(dest_stem)
             attempt_started = counter.snapshot()
             try:
-                path = native_download_format(options, url, video_id, hls, dest_stem)
+                path = fetch_audio(hls)
             except DownloadBudgetExceeded as budget_exc:
                 _fail("audio_hls", budget_exc, attempt_started)
                 raise
@@ -1356,7 +1385,7 @@ def _download_audio_attempt(
             path = contain_raw_aac(path)
         nbytes = _account_file(path, counter, started if not hls_retry else attempt_started)
         log_youtube_attempt(
-            provider=YOUTUBE_DOWNLOAD_PROVIDER_YTDLP_PROXY,
+            provider=_transport_provider(options),
             video_id=video_id,
             kind="audio_hls" if hls_retry else "audio",
             outcome="success",
@@ -1414,6 +1443,8 @@ def _download_section_attempt(
     work = dest.parent / f".parts-{dest.stem}"
     try:
         info = extract_video_info(url, options)
+        if direct_sections_enabled() and (info.get("is_live") or info.get("live_status") == "is_live"):
+            raise PartialDownloadUnavailable("Direct sections require a finished video")
         formats = info.get("formats") or []
         source_language = _video_language(info)
         original_audio = _original_audio_resolution(formats, source_language)
@@ -1468,7 +1499,7 @@ def _download_section_attempt(
         _account_file(dest, counter, before_media)
         nbytes = counter.snapshot() - before
         log_youtube_attempt(
-            provider=YOUTUBE_DOWNLOAD_PROVIDER_YTDLP_PROXY,
+            provider=_transport_provider(options),
             video_id=video_id,
             kind="section",
             outcome="success",
@@ -1479,7 +1510,7 @@ def _download_section_attempt(
         return dest, media_start, media_end
     except Exception as exc:
         log_youtube_attempt(
-            provider=YOUTUBE_DOWNLOAD_PROVIDER_YTDLP_PROXY,
+            provider=_transport_provider(options),
             video_id=video_id,
             kind="section",
             outcome="failure",
@@ -1564,6 +1595,11 @@ def download_full_with_proxy(
             stem = Path(directory) / video_id
 
             def metadata_available(_info, *, incomplete=False):
+                if direct_sections_enabled() and (_info.get("is_live") or _info.get("live_status") == "is_live"):
+                    raise YouTubeDownloadError(
+                        "Direct YouTube download cannot safely bound an ongoing live stream. "
+                        "Wait for it to finish or upload a video file."
+                    )
                 if not incomplete:
                     _metadata_ready(options)
                 return None
@@ -1574,6 +1610,19 @@ def download_full_with_proxy(
                 "outtmpl": str(stem) + ".%(ext)s",
                 "match_filter": metadata_available,
             })
+            if direct_sections_enabled():
+                height = capped_height(int(quality) if quality else None)
+                # Unsupported HLS may hand off to ffmpeg without byte hooks.
+                # Full-file recovery accepts only native HTTP(S) formats.
+                options.update({
+                    "format": (
+                        f"bv*[height<={height}][protocol=https]+ba[protocol=https]/"
+                        f"b[height<={height}][protocol=https]/"
+                        f"bv*[height<={height}][protocol=http]+ba[protocol=http]/"
+                        f"b[height<={height}][protocol=http]"
+                    ),
+                    "external_downloader": {"default": "native"},
+                })
             try:
                 with _proxy_client(options) as ydl:
                     ydl.download([url])

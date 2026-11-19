@@ -18,7 +18,7 @@ Long selections are requested in windows of up to 60 seconds of source video. Ea
 
 Audio and individual windows retry a transient timeout or proxy connection failure once with fresh metadata and a new session. An audio retry has a 60-second deadline. For a window, 60 seconds without new media bytes triggers recovery. A window that keeps receiving bytes may use the time remaining in that provider's overall allowance for the window (six minutes by default), including on the retry. All attempts count against the same job byte allowance.
 
-Uploads and non-YouTube download paths are unchanged. Without a proxy, YouTube jobs still download a full file, now capped at 1080p, and that file is cached too.
+Uploads and non-YouTube download paths are unchanged. Without a proxy and with `YOUTUBE_SECTIONS_DIRECT=false` (the default), YouTube jobs still download a full file, capped at 1080p, and that file is cached too.
 
 Section bytes go through yt-dlp's HTTP client. ffmpeg only trims and muxes local files. `--download-sections` is not used: ffmpeg does not route SOCKS proxies and does not reliably send authenticated HTTP proxy credentials, so the media would leave from the server IP.
 
@@ -46,6 +46,34 @@ Proxy attempts and API Router default to 300 seconds each (`YOUTUBE_PROXY_TIMEOU
 The backend migration `20261103_0001_task_processing_checkpoints.sql` adds task-private JSON checkpoints for transcript text and original word timings, AI analysis, selected segments, and completed plan positions. Each paid stage is saved before downstream downloads or rendering. A missing local transcript sidecar is restored from the checkpoint. Clip creation and its completed-position checkpoint commit together. Checkpoints are removed when their task is deleted. Existing tasks without checkpoints retain their clips, but cannot recover previously unsaved transcription or analysis results.
 
 Source, processing mode, clip length, or transcription configuration changes invalidate the checkpoint; style changes do not. User edits to clip order do not change completed plan positions. The legacy `/resume` API path and MCP tool name remain compatible.
+
+## Direct audio and sections (opt-in)
+
+Set `YOUTUBE_SECTIONS_DIRECT=true` on the worker to use the same audio-first,
+HLS/timed-fragment section pipeline without a proxy. `YOUTUBE_PROXY_URL` takes
+precedence whenever configured; enabling this flag changes nothing in that path.
+Direct mode uses the same `youtube-cache/<video_id>/`, original-audio selection,
+padding, timeline mapping, and remote cache publication as the proxy transport.
+Metadata and media use yt-dlp's native client with the proxy explicitly disabled.
+`--download-sections` is never used.
+
+The shared `YOUTUBE_DOWNLOAD_MAX_BYTES` allowance (default 2 GB) covers audio,
+playlist bytes, selected sections and full-file recovery, including failed
+attempts. Reusing the cache adds no downloaded media bytes. For sources that
+cannot be sliced (ongoing lives, incomplete or encrypted playlists), full-file
+recovery accepts only native HTTP(S) formats so byte hooks can stop the transfer
+and delete partial files. Ongoing lives fail before a full transfer; sources
+without safe formats fail with a clear message. Direct opt-in does not enter
+API Router, Apify or the legacy unbounded yt-dlp fallback. A limit of `0` disables
+the byte cap, as on the proxy path; keep a positive limit for bounded disk use.
+
+Direct mode uses the existing attempt deadlines (`YOUTUBE_PROXY_TIMEOUT_SECONDS`)
+and cannot bypass YouTube IP/bot restrictions. Test a short public video in an
+isolated worker first, then the long source only through audio and transcription.
+Record `youtube_bytes` (provider `yt_dlp`, kinds `audio` / `section` / `full`) and
+free disk before and after. Use a dedicated QA database, Redis and media volumes;
+never run this canary against the user's database. For long audio, set a suitable
+attempt timeout while keeping the byte cap below available disk space.
 
 ## Bandwidth
 

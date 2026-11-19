@@ -35,7 +35,7 @@ from .youtube_proxy import (
     download_audio,
     download_section_file,
     log_youtube_attempt,
-    proxy_configured,
+    sections_enabled,
     public_download_error,
     redact_secrets,
 )
@@ -975,7 +975,7 @@ def download_analysis_source(
     duration: Optional[float] = None,
     download_full: Callable[[], Optional[Path]],
 ) -> tuple[Optional[Path], bool]:
-    """Return ``(path, audio_first)`` for a proxied YouTube job.
+    """Return ``(path, audio_first)`` for an audio/sections YouTube job.
 
     Healthy jobs still take the modest https audio pass. When that pass fails
     with HTTP 403 (the HLS retry lives inside ``download_audio``), the full
@@ -1036,7 +1036,7 @@ def download_audio_for_job(
     task_id: Optional[str] = None,
     budget: Optional[ByteBudget] = None,
 ) -> Path:
-    """Return cached full-duration audio, downloading it through the proxy when needed."""
+    """Return cached full-duration audio, downloading it with the selected transport."""
     runtime = get_config()
     sweep_expired_cache(runtime)
     directory = cache_dir_for(video_id, runtime)
@@ -1054,8 +1054,8 @@ def download_audio_for_job(
                 task_id=task_id,
             )
             return existing
-        if not proxy_configured(runtime):
-            raise YouTubeDownloadError("Audio-first download requires YOUTUBE_PROXY_URL")
+        if not sections_enabled(runtime):
+            raise YouTubeDownloadError("Audio-first download requires YOUTUBE_PROXY_URL or YOUTUBE_SECTIONS_DIRECT")
         # Hold the per-video lock through download and manifest publication.
         # Concurrent jobs must not overwrite the same native downloader files.
         downloaded = download_audio(
@@ -1263,8 +1263,8 @@ def materialize_clip_source(
         pieces = _pieces(directory, manifest)
         gaps = missing_intervals([(piece.start, piece.end) for piece in pieces], needed)
 
-        if gaps and not proxy_configured(runtime):
-            raise PartialDownloadUnavailable("Section download requires YOUTUBE_PROXY_URL")
+        if gaps and not sections_enabled(runtime):
+            raise PartialDownloadUnavailable("Section download requires YOUTUBE_PROXY_URL or YOUTUBE_SECTIONS_DIRECT")
 
         # Recheck and fill gaps under the same lock so a waiting job reuses
         # completed files instead of writing to another job's native parts.

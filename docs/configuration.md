@@ -487,10 +487,11 @@ verify platform app approval or live OAuth, uploads, and metrics.
 
 ## YouTube proxy downloads
 
-Plain `yt-dlp` from a datacenter IP is often stopped with "Sign in to confirm you're not a bot". Set `YOUTUBE_PROXY_URL` to put a residential-proxy `yt-dlp` attempt first. Leave it empty and the download chain is unchanged. See [YouTube download runbook](./youtube-download.md) for the proxy template, the bgutil sidecar, and a canary check.
+Plain `yt-dlp` from a datacenter IP is often stopped with "Sign in to confirm you're not a bot". Set `YOUTUBE_PROXY_URL` to put a residential-proxy `yt-dlp` attempt first. Leave it empty and the download chain is unchanged unless `YOUTUBE_SECTIONS_DIRECT=true`. See [YouTube download runbook](./youtube-download.md) for the proxy template, the bgutil sidecar, and a canary check.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
+| `YOUTUBE_SECTIONS_DIRECT` | `false` | Opt in to the same audio + selected sections pipeline without a proxy. A configured proxy takes precedence. |
 | `YOUTUBE_PROXY_URL` | empty | Proxy template. `{session}` becomes a per-job sticky id. `{country}` is optional. |
 | `YOUTUBE_PROXY_COUNTRY` | empty | Two-letter country code substituted into `{country}`. Other values are ignored. |
 | `YOUTUBE_POT_PROVIDER_URL` | empty | bgutil HTTP base URL, for example `http://bgutil:4416`. |
@@ -500,7 +501,15 @@ Plain `yt-dlp` from a datacenter IP is often stopped with "Sign in to confirm yo
 | `YOUTUBE_SOURCE_CACHE` | `on` | Keep audio and sections so later edits reuse them. `off` deletes sources after each task. |
 | `YOUTUBE_SOURCE_CACHE_TTL_SECONDS` | `604800` | Age after which unused cache directories are removed. |
 
-With a proxy set, a job downloads modest audio first, picks clips, then fetches only the padded ranges at or below 1080p. Section bytes go through yt-dlp's own HTTP client. ffmpeg only trims files that are already local, because ffmpeg does not route SOCKS proxies and mishandles authenticated HTTP proxies.
+With a proxy set, or `YOUTUBE_SECTIONS_DIRECT=true` without a proxy, a job downloads modest audio first, picks clips, then fetches only the padded ranges at or below 1080p. Section bytes go through yt-dlp's own HTTP client. ffmpeg only trims files that are already local, because ffmpeg does not route SOCKS proxies and mishandles authenticated HTTP proxies.
+
+Direct opt-in shares the per-job byte budget and `youtube-cache/<video_id>/`.
+Unsupported sections fall back only to native HTTP(S) full-file transfers under
+that same budget; partial files are removed when it fails. Ongoing lives and
+sources with no safe formats fail clearly. This mode skips API Router, Apify and
+the legacy direct fallback so no transfer can escape the byte counter. Keep
+`YOUTUBE_DOWNLOAD_MAX_BYTES` positive (`0` disables it) and below available disk.
+The existing `YOUTUBE_PROXY_TIMEOUT_SECONDS` also bounds direct attempts.
 
 ## Apify YouTube Downloader
 

@@ -66,6 +66,7 @@ class Config:
         # Empty disables the residential-proxy yt-dlp path. Nothing in the
         # download chain changes until this template is set.
         self.youtube_proxy_url = os.getenv("YOUTUBE_PROXY_URL", "").strip()
+        self.youtube_sections_direct = self._get_bool_env("YOUTUBE_SECTIONS_DIRECT", False)
         self.youtube_proxy_timeout_seconds = self._get_int_env("YOUTUBE_PROXY_TIMEOUT_SECONDS", 300)
         # Twitch/Kick: YOUTUBE_PROXY_TIMEOUT_SECONDS is how long a download may go
         # without receiving data. This is the shortest overall cap for one call.
