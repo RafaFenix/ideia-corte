@@ -331,7 +331,7 @@ def test_orphan_sweep_recognizes_old_component_partials_and_preserves_recent(dir
         os.utime(path, (time.time() - 1000,) * 2)
     storage = SimpleNamespace(config=SimpleNamespace(temp_dir=str(tmp_path), media_orphan_grace_seconds=60))
     candidates = list(local_orphan_candidates(storage))
-    assert candidates == [(str(path), False) for path in old]
+    assert sorted(candidates) == sorted((str(path), False) for path in old)
 
 
 def test_explicit_proxy_keeps_precedence_over_direct_safety_flag(direct):
