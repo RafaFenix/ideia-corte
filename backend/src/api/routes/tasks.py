@@ -18,6 +18,7 @@ from typing import Dict, Any, Optional
 import inspect
 import re
 import secrets
+import subprocess
 import math
 import asyncio
 from datetime import datetime, timezone
@@ -40,7 +41,6 @@ from ...database import AsyncSessionLocal
 from ...services.task_service import TaskService
 from ...services.video_service import VideoService
 from ...media.upload_ingest import foreign_upload
-from ...media.upload_probe import UPLOAD_PREFLIGHT_TIMEOUT_SECONDS
 from ...repositories.upload_repository import get_stored_upload
 from ...services.billing_service import BillingService, BillingLimitExceeded
 from ...auth_headers import resolve_authenticated_user_id
@@ -238,20 +238,20 @@ async def _preflight_upload_source(url: str, user_id: str, duration_limit: int, 
         reference = row.storage_reference if row is not None else None
     try:
         if reference:
-            probe = run_in_thread(VideoService.probe_upload_duration, url, user_id, reference)
+            duration = await run_in_thread(VideoService.probe_upload_duration, url, user_id, reference)
         else:
-            probe = run_in_thread(VideoService.probe_upload_duration, url, user_id)
-        duration = await asyncio.wait_for(probe, timeout=UPLOAD_PREFLIGHT_TIMEOUT_SECONDS)
+            duration = await run_in_thread(VideoService.probe_upload_duration, url, user_id)
         if not math.isfinite(duration) or duration <= 0:
             raise ValueError("Invalid video duration")
-    except TimeoutError:
+    except subprocess.TimeoutExpired:
         raise HTTPException(
-            status_code=503,
+            status_code=422,
             detail={
-                "code": "VIDEO_METADATA_UNAVAILABLE",
+                "code": "VIDEO_PROBE_TIMEOUT",
                 "message": (
-                    "Reading this video's length took too long. Try again, or export "
-                    "a standard MP4 and upload it. No minutes were used."
+                    "This video took too long to read. Re-export it with fast start "
+                    "(\"optimize for web\") turned on, or upload a shorter or smaller "
+                    "file. No minutes were used."
                 ),
             },
         ) from None
