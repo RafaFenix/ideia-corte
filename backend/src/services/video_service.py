@@ -676,6 +676,7 @@ class VideoService:
         errors: Optional[list] = None,
         progress_callback: Optional[ProgressCallback] = None,
         download_progress: int = 10,
+        should_cancel: Optional[Callable[[], Awaitable[bool]]] = None,
     ) -> Optional[Path]:
         """
         Download YouTube media for rendering.
@@ -738,6 +739,7 @@ class VideoService:
         try:
             video_path = await run_download_in_thread(
                 _resolve, progress_callback=progress_callback, progress=download_progress,
+                should_cancel=should_cancel,
             )
         except DownloadBudgetExceeded:
             logger.error("YouTube download exceeded the per-job byte limit: %s", url)
@@ -1392,6 +1394,7 @@ class VideoService:
                 try:
                     video_info = await async_get_youtube_video_info(
                         url, task_id=task_id, budget=job_budget,
+                        should_cancel=should_cancel,
                     )
                 except YouTubeGeoRestrictedError as exc:
                     # A retry already passed admission. Metadata failure must
@@ -1451,6 +1454,7 @@ class VideoService:
                     try:
                         video_path, audio_first = await run_download_in_thread(
                             _resolve_analysis, progress_callback=progress_callback,
+                            should_cancel=should_cancel,
                         )
                     except DownloadBudgetExceeded as exc:
                         raise Exception(str(exc)) from exc
@@ -1459,6 +1463,7 @@ class VideoService:
                     video_path = cached_full or await VideoService.download_video(
                         url, task_id=task_id, quality=download_quality, budget=job_budget,
                         progress_callback=progress_callback,
+                        should_cancel=should_cancel,
                     )
                 video_path = preserve_geo_restriction(video_path, metadata_error)
                 if not video_path:
@@ -1666,6 +1671,7 @@ class VideoService:
                             task_id=task_id, budget=job_budget, duration=file_duration,
                             audio_path=audio_path, quality=download_quality,
                             progress_callback=progress_callback, progress=65,
+                            should_cancel=should_cancel,
                         )
                 except DownloadBudgetExceeded as exc:
                     raise Exception(str(exc)) from exc
@@ -1694,6 +1700,7 @@ class VideoService:
                             url, task_id=task_id, quality=download_quality, budget=job_budget,
                             skip_proxy=not isinstance(section_error, PartialDownloadUnavailable),
                             progress_callback=progress_callback, download_progress=65,
+                            should_cancel=should_cancel,
                         )
                         video_path = preserve_geo_restriction(video_path, section_error)
                     if video_path and audio_path:
@@ -1789,7 +1796,7 @@ class VideoService:
             }
 
         except (Exception, asyncio.CancelledError) as e:
-            if source_type == "youtube" and video_path is not None:
+            if source_type == "youtube":
                 video_id = get_youtube_video_id(url)
                 if video_id:
                     try:

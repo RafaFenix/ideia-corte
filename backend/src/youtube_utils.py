@@ -10,6 +10,8 @@ import math
 import json
 import uuid
 import re
+import shutil
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -20,15 +22,20 @@ import yt_dlp
 
 from .apify_youtube_downloader import ApifyDownloadError, download_video_via_apify
 from .config import get_config
-from .download_progress import DownloadRecovery, report_download_recovery
+from .youtube_artifacts import cleanup_legacy_partials
+from .download_progress import DownloadRecovery, report_download_recovery, run_download_in_thread
+from .download_cancellation import check_download_cancelled, managed_ytdlp_client
 from .media.ffmpeg import ffprobe_video_size
 from .youtube_proxy import (
     YOUTUBE_DOWNLOAD_PROVIDER_YTDLP_PROXY,
     ByteBudget,
+    _progress_hook,
+    _account_failed_media,
     DownloadBudgetExceeded,
     base_proxy_params,
     download_full_with_proxy,
     direct_sections_enabled,
+    direct_budget_required,
     extract_video_info_with_proxy,
     extract_video_info,
     YouTubeDownloadError,
@@ -236,6 +243,7 @@ def _get_local_video_dimensions(path: Path) -> tuple[int, int]:
 
 
 def _remove_cached_downloads(temp_dir: Path, video_id: str) -> None:
+    cleanup_legacy_partials(temp_dir, video_id)
     cached_files = [
         file_path
         for file_path in temp_dir.glob(f"{video_id}.*")
@@ -339,7 +347,7 @@ def _fetch_video_info_with_ytdlp(
             ydl_opts["_youtube_deadline"] = deadline
             info = extract_video_info(url, ydl_opts)
         else:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            with managed_ytdlp_client(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
 
     return {
@@ -440,11 +448,12 @@ async def async_get_youtube_video_info(
     *,
     budget: Optional[ByteBudget] = None,
     deadline: Optional[float] = None,
+    should_cancel=None,
 ) -> Optional[Dict[str, Any]]:
     if deadline is None:
         deadline = time.monotonic() + get_config().youtube_preflight_timeout_seconds
-    return await asyncio.to_thread(
-        get_youtube_video_info, url, task_id, budget=budget, deadline=deadline,
+    return await run_download_in_thread(
+        get_youtube_video_info, url, task_id, budget=budget, deadline=deadline, should_cancel=should_cancel,
     )
 
 
@@ -627,6 +636,8 @@ def _download_youtube_video_with_ytdlp(
     max_retries: int = 3,
     task_id: Optional[str] = None,
     quality: Optional[str] = None,
+    *,
+    budget: Optional[ByteBudget] = None,
 ) -> Optional[Path]:
     """
     Download YouTube video with optimized settings and retry logic.
@@ -640,12 +651,37 @@ def _download_youtube_video_with_ytdlp(
         return None
 
     downloader = YouTubeDownloader()
-    # This is the independent datacenter fallback. yt-dlp extracts metadata
-    # during download; a separate proxied lookup must not gate this route.
+    counter = budget or ByteBudget(get_config().youtube_download_max_bytes)
+    if counter.native_only or direct_budget_required():
+        # Defence in depth: even a caller that picked the legacy provider must
+        # never start its unbounded download in an opted-in job.
+        return download_full_with_proxy(
+            url, video_id, downloader.temp_dir, task_id=task_id, budget=counter, quality=quality,
+        )
+    root = downloader.temp_dir
+    directory = Path(tempfile.mkdtemp(prefix=f"ytdl-{video_id}-", dir=root))
+    downloader.temp_dir = directory
+    completed = False
+    try:
+        result = _legacy_ytdlp_download(downloader, url, video_id, max_retries, quality, counter)
+        if result is not None:
+            from .youtube_source import copy_transcript_sidecar
+            copy_transcript_sidecar(root / f"{video_id}.mp4", result)
+            completed = True
+        return result
+    finally:
+        if not completed:
+            shutil.rmtree(directory, ignore_errors=True)
 
+
+def _legacy_ytdlp_download(downloader, url, video_id, max_retries, quality, counter):
+    # The independent datacenter route owns its paths. A cancelled or failed
+    # attempt cannot unlink media being downloaded by another task of this video.
     last_error: Optional[str] = None
 
     for attempt in range(max_retries):
+        check_download_cancelled()
+        ydl_opts = {}
         try:
             logger.info("Download attempt %s/%s", attempt + 1, max_retries)
 
@@ -653,7 +689,11 @@ def _download_youtube_video_with_ytdlp(
                 video_id, int(quality) if quality else None
             )
 
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            seen = {}
+            count_bytes = _progress_hook(counter, seen)
+            ydl_opts.update({"progress_hooks": [count_bytes], "_youtube_count_bytes": count_bytes,
+                             "_youtube_seen_bytes": seen, "buffersize": 65_536, "noresizebuffer": True})
+            with managed_ytdlp_client(ydl_opts) as ydl:
                 ydl.download([url])
 
             logger.info(f"Searching for downloaded file: {video_id}.*")
@@ -686,7 +726,10 @@ def _download_youtube_video_with_ytdlp(
 
             logger.warning("No video file found after download attempt %s", attempt + 1)
 
+        except DownloadBudgetExceeded:
+            raise
         except yt_dlp.utils.DownloadError as e:
+            _account_failed_media(ydl_opts, downloader.temp_dir / video_id, e)
             # Retrying the same datacenter cannot change a country restriction.
             # Let independent download providers try their own regions instead.
             if is_geo_restricted_error(e):
@@ -701,6 +744,7 @@ def _download_youtube_video_with_ytdlp(
                 logger.error("All download attempts failed")
 
         except Exception as e:
+            _account_failed_media(ydl_opts, downloader.temp_dir / video_id, e)
             if is_geo_restricted_error(e):
                 raise YouTubeGeoRestrictedError() from e
             last_error = str(e)
@@ -788,10 +832,13 @@ def download_youtube_video(
 
     config = get_config()
     job_budget = budget or ByteBudget(getattr(config, "youtube_download_max_bytes", 2_000_000_000))
+    job_budget.native_only = job_budget.native_only or direct_budget_required(config)
     geo_error: Optional[BaseException] = None
     attempted_providers = 0
 
     for provider in _provider_order(config, skip_proxy=skip_proxy):
+        if job_budget.native_only and provider not in {YOUTUBE_DOWNLOAD_PROVIDER_YTDLP_PROXY, YOUTUBE_DOWNLOAD_PROVIDER_YTDLP}:
+            continue
         if provider == YOUTUBE_DOWNLOAD_PROVIDER_RAPIDAPI and not config.rapidapi_youtube_api_key:
             continue
         if provider == YOUTUBE_DOWNLOAD_PROVIDER_APIFY and not config.apify_api_token:
@@ -805,7 +852,7 @@ def download_youtube_video(
         attempted_providers += 1
         before = job_budget.snapshot()
         try:
-            if provider == YOUTUBE_DOWNLOAD_PROVIDER_YTDLP_PROXY or direct_sections_enabled(config):
+            if provider == YOUTUBE_DOWNLOAD_PROVIDER_YTDLP_PROXY or job_budget.native_only or direct_sections_enabled(config):
                 downloaded_path = download_full_with_proxy(
                     url, video_id, downloader.temp_dir, task_id=task_id, budget=job_budget, quality=quality,
                 )
@@ -816,7 +863,7 @@ def download_youtube_video(
                     timeout_seconds=config.rapidapi_youtube_timeout_seconds,
                 )
             elif provider == YOUTUBE_DOWNLOAD_PROVIDER_YTDLP:
-                downloaded_path = _download_youtube_video_with_ytdlp(url, max_retries, task_id, quality)
+                downloaded_path = _download_youtube_video_with_ytdlp(url, max_retries, task_id, quality, budget=job_budget)
             else:
                 downloaded_path = download_youtube_video_with_apify(url, video_id, quality)
         except DownloadBudgetExceeded as exc:
@@ -832,7 +879,7 @@ def download_youtube_video(
                 return None
             continue
         except Exception as exc:
-            if direct_sections_enabled(config):
+            if job_budget.native_only or direct_sections_enabled(config):
                 _note_attempt(provider, video_id, task_id, job_budget, before, outcome="failure", error=str(exc))
                 if errors is not None:
                     errors.append(public_download_error(exc))
@@ -889,9 +936,10 @@ async def async_download_youtube_video(
     *,
     budget: Optional[ByteBudget] = None,
     skip_proxy: bool = False,
+    should_cancel=None,
 ) -> Optional[Path]:
     logger.info(f"Starting async YouTube download: {url}")
-    return await asyncio.to_thread(
+    return await run_download_in_thread(
         download_youtube_video,
         url,
         max_retries,
@@ -899,6 +947,7 @@ async def async_download_youtube_video(
         quality,
         budget=budget,
         skip_proxy=skip_proxy,
+        should_cancel=should_cancel,
     )
 
 
@@ -942,6 +991,7 @@ def cleanup_downloaded_files(video_id: str, source_path: Optional[Path] = None):
     """
     from .youtube_source import WORK_DIRNAME, is_preserved_cache_path, is_youtube_work_path
 
+    cleanup_legacy_partials(Path(get_config().temp_dir), video_id)
     if is_preserved_cache_path(source_path):
         logger.info("Keeping cached YouTube source for %s", video_id)
         return
@@ -955,12 +1005,12 @@ def cleanup_downloaded_files(video_id: str, source_path: Optional[Path] = None):
 
     temp_dir = Path(get_config().temp_dir)
     provider_dir = False
-    if source_path is not None and source_path.parent.name.startswith((f"apify-{video_id}-", f"rapidapi-{video_id}-", f"proxy-{video_id}-")):
+    if source_path is not None and source_path.parent.name.startswith((f"apify-{video_id}-", f"rapidapi-{video_id}-", f"proxy-{video_id}-", f"ytdl-{video_id}-")):
         candidate = source_path.parent.resolve()
         if candidate.parent != temp_dir.resolve():
             logger.warning("Refusing source cleanup outside the configured download directory")
             return
-        if candidate.name.startswith(f"proxy-{video_id}-"):
+        if candidate.name.startswith((f"proxy-{video_id}-", f"ytdl-{video_id}-")):
             # A proxy attempt now owns a unique directory. Retain reusable
             # timings at the stable per-video path before removing that media.
             sidecar = source_path.with_suffix(".transcript_cache.json")

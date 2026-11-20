@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Tuple
 from ..clip_source_map import normalize_source_ranges
 from ..config import get_config
+from ..download_cancellation import run_local_process
 import json
 import re
 import subprocess
@@ -38,7 +39,7 @@ def clamp_even(value: int, minimum: int, maximum: int) -> int:
 
 def run_ffmpeg_command(command: List[str], timeout: int = 900) -> subprocess.CompletedProcess:
     """Run ffmpeg/ffprobe and log stderr on failure."""
-    result = subprocess.run(
+    result = run_local_process(
         command,
         capture_output=True,
         text=True,

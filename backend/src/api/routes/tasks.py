@@ -118,8 +118,8 @@ def _duration_unavailable_error(platform: str) -> HTTPException:
 
 async def _preflight_youtube_source(url: str, duration_limit: int) -> Dict[str, Any]:
     """Check duration before creating a task or consuming a generation."""
-    # wait_for cancels the awaiting task when this elapses. A yt-dlp call already
-    # running inside asyncio.to_thread can finish in the background.
+    # Timeout also signals the metadata reader and joins its thread, so it does
+    # not leave an extractor running after the request returns.
     timeout_seconds = get_config().youtube_preflight_timeout_seconds
     try:
         metadata = await asyncio.wait_for(

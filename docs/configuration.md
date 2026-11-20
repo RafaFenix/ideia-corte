@@ -511,6 +511,14 @@ the legacy direct fallback so no transfer can escape the byte counter. Keep
 `YOUTUBE_DOWNLOAD_MAX_BYTES` positive (`0` disables it) and below available disk.
 The existing `YOUTUBE_PROXY_TIMEOUT_SECONDS` also bounds direct attempts.
 
+Direct HLS playlist metadata can scale from 4 MB to 2 MB per source hour
+(rounded up), capped at 64 MB; incremental reads also honor the shared byte
+budget. The budget remains attached to recovery attempts if their route changes.
+YouTube yt-dlp cancellation stops native readers and the job's subprocesses,
+waits for them to exit, then cleans partial files, including with the direct flag
+off. Legacy staging is isolated per download; orphan cleanup also recognizes
+old `.part` and `.ytdl` files in `TEMP_DIR`. See the runbook for details.
+
 ## Apify YouTube Downloader
 
 SupoClip uses the actor explicitly configured in the private environment as the primary YouTube download path. Metadata preflight and fallback downloads rely on the local `yt-dlp` stack over a direct connection. When `YOUTUBE_PROXY_URL` is set, the proxy attempt runs before Apify.

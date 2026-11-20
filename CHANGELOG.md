@@ -4,6 +4,12 @@ What changed in SupoClip for people using the product. Newest dates are first.
 
 Add a line here when a pull request changes something a user can see. Use **New**, **Improved**, **Fixed**, or **Under the hood**, describe the change in plain language, and link the pull request. Skip internal-only work, or fold it into one **Under the hood** line. Do not include customer names, email addresses, user IDs, or anything else private.
 
+## 2026-11-20
+
+- **Fixed:** Direct YouTube downloads keep the same byte allowance through recovery, so an audio failure cannot start an unrestricted full-video download. Long recordings can use larger audio playlists within that allowance. ([#3](https://github.com/RafaFenix/ideia-corte/pull/3))
+- **Fixed:** Cancelling a YouTube download stops its network transfer and downloader processes before releasing its files, with direct sections enabled or disabled. ([#3](https://github.com/RafaFenix/ideia-corte/pull/3))
+- **Fixed:** Failed and cancelled YouTube downloads remove their partial files. Cleanup also finds older downloader fragments and state files left in the temporary directory. ([#3](https://github.com/RafaFenix/ideia-corte/pull/3))
+
 ## 2026-11-19
 
 - **Improved:** Self-hosted workers can opt in to downloading YouTube audio first, including recorded livestream audio, and only the selected video sections without a proxy, with a shared download limit and reusable cache. ([#3](https://github.com/RafaFenix/ideia-corte/pull/3))

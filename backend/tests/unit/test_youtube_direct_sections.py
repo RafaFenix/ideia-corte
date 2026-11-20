@@ -1,6 +1,7 @@
 """Direct transport reuses audio, sections, cache and bounded full recovery."""
 
 import copy
+import io
 import json
 import logging
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -121,7 +122,7 @@ def test_disabled_keeps_legacy_full_download(direct, monkeypatch, tmp_path):
     full.write_bytes(b"legacy")
     calls = []
     monkeypatch.setattr(youtube, "_download_youtube_video_with_ytdlp",
-                        lambda *args: calls.append(args) or full)
+                        lambda *args, **kwargs: calls.append(args) or full)
     monkeypatch.setattr(youtube, "download_full_with_proxy",
                         lambda *a, **kw: pytest.fail("Disabled flag must keep legacy path"))
     assert not transport.sections_enabled(direct)
@@ -233,8 +234,10 @@ async def test_unsupported_hls_falls_back_to_bounded_full_file(direct, native, m
     monkeypatch.setattr(ydl, "extract_info", lambda *a, **kw: {"duration": 60, "formats": formats})
     class Response:
         url = "https://rr1---sn-example.googlevideo.com/playlist.m3u8"
+        def __init__(self):
+            self.body = io.BytesIO(playlist.encode())
         def read(self, size):
-            return playlist.encode()
+            return self.body.read(size)
         def close(self):
             pass
     monkeypatch.setattr(ydl, "urlopen", lambda *a: Response())

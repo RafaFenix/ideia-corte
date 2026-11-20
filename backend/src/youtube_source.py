@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Callable, Iterable, Optional
 
 from .config import get_config
+from .download_cancellation import run_local_process
 from .download_progress import DownloadRecovery, report_download_recovery
 from .youtube_proxy import (
     AudioDownloadForbidden,
@@ -839,7 +840,7 @@ def _discard_staged_download(video_id: str, source: Path, dest: Path) -> None:
     transcript = source.with_suffix(".transcript_cache.json")
     if transcript.exists() and transcript.resolve() != dest.with_suffix(".transcript_cache.json").resolve():
         transcript.unlink(missing_ok=True)
-    if staging.name.startswith((f"apify-{video_id}-", f"proxy-{video_id}-")):
+    if staging.name.startswith((f"apify-{video_id}-", f"proxy-{video_id}-", f"ytdl-{video_id}-")):
         shutil.rmtree(staging, ignore_errors=True)
 
 
@@ -1154,7 +1155,7 @@ def _trim_local(source: Path, dest: Path, offset: float, duration: float) -> Non
         "-c:a", "pcm_s16le", "-ar", "48000",
         str(dest),
     ]
-    result = subprocess.run(command, capture_output=True, text=True)
+    result = run_local_process(command, capture_output=True, text=True)
     if result.returncode != 0 or not dest.exists():
         raise YouTubeDownloadError("Could not trim a cached section locally")
 
@@ -1176,7 +1177,7 @@ def _concat_local(files: list[Path], dest: Path, *, durations: Optional[list[flo
         "-c:v", "copy", "-c:a", "aac", "-b:a", "128k",
         str(dest),
     ]
-    result = subprocess.run(command, capture_output=True, text=True)
+    result = run_local_process(command, capture_output=True, text=True)
     listing.unlink(missing_ok=True)
     if result.returncode != 0 or not dest.exists():
         raise YouTubeDownloadError("Could not concatenate cached sections locally")
@@ -1296,11 +1297,15 @@ def materialize_clip_source(
 
     work = _work_dir(video_id, task_id)
     render_path = work / "render.mp4"
-    time_map = assemble_timeline(deduped, render_path)
-    source_audio = audio_path or _audio_path(directory, _load_manifest(directory, video_id))
-    if source_audio:
-        copy_transcript_sidecar(source_audio, render_path, time_map)
-    return render_path
+    try:
+        time_map = assemble_timeline(deduped, render_path)
+        source_audio = audio_path or _audio_path(directory, _load_manifest(directory, video_id))
+        if source_audio:
+            copy_transcript_sidecar(source_audio, render_path, time_map)
+        return render_path
+    except BaseException:
+        shutil.rmtree(work, ignore_errors=True)
+        raise
 
 
 def cached_full_media(video_id: str, quality: Optional[str] = None) -> Optional[Path]:

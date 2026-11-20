@@ -80,6 +80,29 @@ free disk before and after. Use a dedicated QA database, Redis and media volumes
 never run this canary against the user's database. For long audio, set a suitable
 attempt timeout while keeping the byte cap below available disk space.
 
+For long recordings, direct HLS playlists may grow from 4 MB to 2 MB per
+started source hour, capped at 64 MB. They are read in blocks of at most 64 KiB,
+charging the job budget as bytes arrive. A small remaining allowance stops the
+playlist read immediately, before any full-file recovery. The requirement for
+a bounded native fallback is retained on the job's budget even if trial routing
+changes during recovery. An explicitly configured proxy still takes precedence.
+
+## Cancellation and partial files
+
+YouTube yt-dlp downloads poll the task's cancellation flag during every download
+stage. Cancelling signals the reader, kills only subprocess groups owned by that
+download (including ffmpeg recovery/remuxing), and waits for the writer to stop
+before cleaning files. Socket reads in a cancellable operation have a five-second
+timeout. Cancelling the worker's awaiting coroutine uses the same shutdown path.
+This applies with `YOUTUBE_SECTIONS_DIRECT` enabled or disabled.
+
+New legacy downloads use private `ytdl-<video_id>-.../` staging directories.
+Failures and cancellation remove these directories without deleting another
+job's files. Cleanup also removes old per-video `.part`, `.part-FragN`, `.ytdl`
+and `.ytdl.tmp` files from the root of `TEMP_DIR`, even when no source path was
+returned. The worker's orphan sweep recognizes these older files after its
+normal grace period. Reusable transcript JSON and cached audio/sections are kept.
+
 ## Bandwidth
 
 Planning figure: about **0.18 GB per source hour**.

@@ -25,6 +25,7 @@ from typing import Any, Callable, Optional
 from urllib.parse import urljoin, urlsplit
 
 from .config import get_config
+from .download_cancellation import DownloadCancelled, check_download_cancelled, managed_ytdlp_client, run_local_process
 from .download_progress import DownloadRecovery, report_download_recovery
 from .media.source_limits import contain_raw_aac
 
@@ -161,6 +162,7 @@ class _SectionTransferClock:
 
 
 def _check_deadline(options: dict) -> float:
+    check_download_cancelled()
     section_clock = options.get("_youtube_section_clock")
     deadline = section_clock.deadline if section_clock else options.get("_youtube_deadline")
     remaining = deadline - time.monotonic() if deadline is not None else 20.0
@@ -175,7 +177,7 @@ def _proxy_client(options: dict):
     from yt_dlp.networking import Request
 
     _check_deadline(options)
-    with yt_dlp.YoutubeDL(options) as client:
+    with managed_ytdlp_client(options) as client:
         if "_youtube_deadline" in options:
             original_open = client.urlopen
 
@@ -198,6 +200,8 @@ class ByteBudget:
     def __init__(self, limit: int):
         self.limit = max(0, int(limit))
         self.total = 0
+        # Keep the safety requirement even if trial routing changes transports.
+        self.native_only = direct_budget_required()
         self._lock = threading.Lock()
         # Recovery belongs to this job, never to the process-wide configuration.
         self._proxy_routes: dict[tuple[Optional[str], str], tuple[str, str]] = {}
@@ -235,6 +239,14 @@ def proxy_configured(config=None) -> bool:
 def direct_sections_enabled(config=None) -> bool:
     runtime = config or get_config()
     return not proxy_configured(runtime) and bool(getattr(runtime, "youtube_sections_direct", False))
+
+
+def direct_budget_required(config=None) -> bool:
+    """Capture direct opt-in before an optional trial route changes transport."""
+    runtime = config or get_config()
+    return bool(getattr(runtime, "youtube_sections_direct", False)) and not bool(
+        (getattr(runtime, "youtube_proxy_url", "") or "").strip()
+    )
 
 
 def sections_enabled(config=None) -> bool:
@@ -434,6 +446,7 @@ def base_proxy_params(task_id: Optional[str] = None, video_id: Optional[str] = N
 
 def _progress_hook(budget: ByteBudget, seen: dict[str, int]) -> Callable[[dict], bool]:
     def hook(status: dict) -> bool:
+        check_download_cancelled()
         if status.get("status") not in {"downloading", "finished"}:
             return False
         filename = str(status.get("filename") or status.get("tmpfilename") or "")
@@ -546,6 +559,9 @@ def _with_proxy_retry(operation: Callable, *, task_id: Optional[str], video_id: 
             result = operation(options)
             budget.remember_proxy_route(task_id, video_id, country, session)
             return result
+        except DownloadCancelled:
+            cleanup()
+            raise
         except Exception as exc:
             cleanup()
             if isinstance(exc, DownloadBudgetExceeded):
@@ -1060,11 +1076,31 @@ def expand_hls_format(fmt: dict, options: dict, budget: ByteBudget, duration: fl
             response = ydl.urlopen(Request(address, headers=fmt.get("http_headers") or {}))
             try:
                 base_url = _hls_url(address, response.url)
-                payload = response.read(4_000_001)
+                limit = 4_000_000
+                if budget.native_only:
+                    # Long VODs have thousands of signed segment URLs. Grow the
+                    # metadata allowance, but never beyond 64 MB or the job cap.
+                    hours = float(duration or 0) / 3600
+                    if math.isfinite(hours) and hours > 0:
+                        limit = max(limit, min(64_000_000, math.ceil(hours) * 2_000_000))
+                    chunks = []
+                    size = 0
+                    while size <= limit:
+                        remaining = budget.limit - budget.snapshot() if budget.limit else limit
+                        chunk = response.read(min(65_536, limit + 1 - size, max(1, remaining + 1)))
+                        if not chunk:
+                            break
+                        budget.add(len(chunk))
+                        chunks.append(chunk)
+                        size += len(chunk)
+                    payload = b"".join(chunks)
+                else:
+                    payload = response.read(limit + 1)
             finally:
                 response.close()
-        budget.add(len(payload))
-        if len(payload) > 4_000_000:
+        if not budget.native_only:
+            budget.add(len(payload))
+        if len(payload) > limit:
             raise PartialDownloadUnavailable("HLS playlist exceeds its size limit")
         fragments = parse_hls_fragments(payload.decode("utf-8"), base_url, duration)
     except (DownloadBudgetExceeded, DownloadDeadlineExceeded, PartialDownloadUnavailable):
@@ -1622,7 +1658,7 @@ def download_full_with_proxy(
                 "outtmpl": str(stem) + ".%(ext)s",
                 "match_filter": metadata_available,
             })
-            if direct_sections_enabled():
+            if counter.native_only or direct_sections_enabled():
                 height = capped_height(int(quality) if quality else None)
                 # Unsupported HLS may hand off to ffmpeg without byte hooks.
                 # Full-file recovery accepts only native HTTP(S) formats.
@@ -1682,7 +1718,7 @@ def _mux_local_window(
         "-c", "copy",
         str(dest),
     ]
-    result = subprocess.run(command, capture_output=True, text=True)
+    result = run_local_process(command, capture_output=True, text=True)
     if result.returncode != 0 or not dest.exists() or dest.stat().st_size <= 0:
         raise YouTubeDownloadError(
             "Could not mux the downloaded section locally: "
