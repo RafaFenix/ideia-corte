@@ -57,6 +57,8 @@ def direct(tmp_path, monkeypatch):
 @pytest.fixture
 def native(monkeypatch):
     calls = []
+    # This downloader fixture writes synthetic bytes for a 60-second source.
+    monkeypatch.setattr(transport, "probe_media_duration", lambda _path: 60.0)
 
     class YDL:
         live = False
@@ -384,6 +386,7 @@ def test_real_native_dash_audio_uses_lazy_fragments_and_shared_budget(direct, mo
 
     monkeypatch.setattr(transport, "extract_video_info", metadata)
     monkeypatch.setattr(transport, "base_proxy_params", options)
+    monkeypatch.setattr(transport, "probe_media_duration", lambda _path: 60.0)
     budget = transport.ByteBudget(limit)
     try:
         def download():

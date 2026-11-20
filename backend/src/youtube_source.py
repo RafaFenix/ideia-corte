@@ -25,6 +25,7 @@ from .download_cancellation import run_local_process
 from .download_progress import DownloadRecovery, report_download_recovery
 from .youtube_proxy import (
     AudioDownloadForbidden,
+    AudioDownloadIncomplete,
     AudioDownloadInterrupted,
     ByteBudget,
     DownloadBudgetExceeded,
@@ -38,12 +39,15 @@ from .youtube_proxy import (
     download_audio,
     direct_budget_required,
     discard_audio_resume,
+    download_options,
+    validate_audio_duration,
     download_section_file,
     log_youtube_attempt,
     sections_enabled,
     public_download_error,
     redact_secrets,
 )
+from . import youtube_proxy as youtube_transport
 
 logger = logging.getLogger(__name__)
 
@@ -994,7 +998,8 @@ def download_analysis_source(
     if direct and budget is None:
         budget = ByteBudget(get_config().youtube_download_max_bytes)
     try:
-        return download_audio_for_job(url, video_id, task_id=task_id, budget=budget), True
+        audio_options = {"expected_duration": duration} if direct else {}
+        return download_audio_for_job(url, video_id, task_id=task_id, budget=budget, **audio_options), True
     except DownloadBudgetExceeded:
         raise
     except AudioDownloadForbidden as exc:
@@ -1016,7 +1021,7 @@ def download_analysis_source(
                 else "Full-video recovery cannot be confirmed to fit the download allowance. "
             )
             raise AudioDownloadInterrupted(
-                "YouTube audio transfer stalled or timed out. " + size
+                "YouTube audio is incomplete or its transfer was interrupted. " + size
                 + "No full video was started. Retry to resume compatible saved audio, or upload the file.",
                 full_estimate_bytes=estimate, resumable=getattr(failure, "resumable", False),
             ) from failure
@@ -1061,15 +1066,37 @@ def download_audio_for_job(
     *,
     task_id: Optional[str] = None,
     budget: Optional[ByteBudget] = None,
+    expected_duration: Optional[float] = None,
 ) -> Path:
     """Return cached full-duration audio, downloading it with the selected transport."""
     runtime = get_config()
+    direct = direct_budget_required(runtime)
+    if direct and budget is None:
+        budget = ByteBudget(runtime.youtube_download_max_bytes)
     sweep_expired_cache(runtime)
     directory = cache_dir_for(video_id, runtime)
     with _cache_lock(directory):
         _restore_remote_cache(video_id, directory)
         manifest = _load_manifest(directory, video_id)
         existing = _audio_path(directory, manifest)
+        if existing and direct:
+            expected = _positive_duration(expected_duration) or _positive_duration(manifest.get("audio_source_duration"))
+            if expected is None:
+                # Pre-fix cache entries have no proof of full source coverage.
+                options = download_options(task_id, video_id, budget)
+                expected = youtube_transport.extract_video_info(url, options).get("duration")
+            try:
+                measured = validate_audio_duration(existing, expected)
+            except AudioDownloadIncomplete:
+                existing.unlink(missing_ok=True)
+                existing.with_suffix(".transcript_cache.json").unlink(missing_ok=True)
+                manifest["audio"] = None
+                manifest.pop("audio_source_duration", None)
+                _save_manifest(directory, manifest)
+                existing = None
+            else:
+                manifest["audio_source_duration"] = max(float(expected), measured)
+                _save_manifest(directory, manifest)
         if existing:
             discard_audio_resume(directory / f"audio-{AUDIO_POLICY}")
             log_youtube_attempt(
@@ -1093,6 +1120,8 @@ def download_audio_for_job(
             url, video_id, directory / f"audio-{AUDIO_POLICY}", task_id=task_id, budget=budget,
         )
         manifest["audio"] = downloaded.name
+        if direct:
+            manifest["audio_source_duration"] = youtube_transport.probe_media_duration(downloaded)
         _save_manifest(directory, manifest)
     _persist_named(video_id, downloaded)
     _persist_manifest(video_id, directory)

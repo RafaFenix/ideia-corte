@@ -17,6 +17,7 @@ def test_slow_hls_audio_keeps_progress_beyond_initial_total_deadline(direct, nat
     attempts = []
     metadata = []
     monkeypatch.setattr(proxy.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(proxy, "probe_media_duration", lambda _path: 37864.0)
     formats = [
         {"format_id": "140", "protocol": "https", "url": "https://rr.example.googlevideo.com/a",
          "ext": "m4a", "vcodec": "none", "acodec": "aac", "abr": 128},
@@ -202,6 +203,9 @@ def resumable_audio(direct, monkeypatch):
     monkeypatch.setattr(proxy, "base_proxy_params", lambda *a, **kw: dict(original(*a, **kw), fixup="never", noprogress=True))
     monkeypatch.setattr(proxy, "extract_video_info", metadata)
     monkeypatch.setattr(proxy, "contain_raw_aac", lambda path: path)
+    monkeypatch.setattr(proxy, "probe_media_duration", lambda path: (
+        path.stat().st_size / 32768 * 20 if str(path).endswith(".part") else 60.0
+    ))
     try:
         yield state, payload, tracks, mode
     finally:

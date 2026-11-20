@@ -516,6 +516,12 @@ worker's independent job timeout still applies. Direct audio retries resume
 compatible local HTTP/HLS/DASH checkpoints without charging saved bytes again;
 after an audio timeout, full recovery is refused if the estimated source exceeds
 the remaining allowance, is unknown, or resumable audio is already available.
+Completed direct audio and cached audio must match metadata duration within both
+2% and 30 seconds, using ffprobe. Truncation retries under the same budget;
+inconsistent HLS checkpoint prefixes are restarted. Unproven legacy transcripts,
+selections and processing checkpoints are invalidated before reuse. Verified
+source duration updates the active task and its existing minute charge together,
+preserving refunds and leaving completed tasks unchanged.
 
 Direct HLS playlist metadata can scale from 4 MB to 2 MB per source hour
 (rounded up), capped at 64 MB; incremental reads also honor the shared byte

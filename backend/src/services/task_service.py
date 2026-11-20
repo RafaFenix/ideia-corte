@@ -597,6 +597,11 @@ class TaskService(ClipEditingMixin):
             )
 
             async def save_checkpoint(patch: Dict[str, Any]) -> None:
+                if source_type == "youtube" and patch.get("verified_source_duration_seconds"):
+                    await check_cancelled()
+                    await self.task_repo.record_verified_source_duration(
+                        self.db, task_id, patch["verified_source_duration_seconds"],
+                    )
                 await self.checkpoint_repo.save(self.db, task_id, input_key, patch)
                 checkpoint.update(patch)
 

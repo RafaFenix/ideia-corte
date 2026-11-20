@@ -29,7 +29,7 @@ from urllib.parse import urljoin, urlsplit
 from .config import get_config
 from .download_cancellation import DownloadCancelled, check_download_cancelled, managed_ytdlp_client, run_local_process
 from .download_progress import DownloadRecovery, report_download_recovery
-from .media.source_limits import contain_raw_aac
+from .media.source_limits import contain_raw_aac, probe_media_duration
 
 logger = logging.getLogger(__name__)
 
@@ -156,6 +156,27 @@ class AudioDownloadInterrupted(YouTubeDownloadError):
         super().__init__(message)
         self.full_estimate_bytes = full_estimate_bytes
         self.resumable = resumable
+
+
+class AudioDownloadIncomplete(AudioDownloadInterrupted):
+    """A finished file or saved checkpoint does not cover its source timeline."""
+
+
+def validate_audio_duration(path: Path, expected_duration: float) -> float:
+    """Never publish a short or duplicated direct-audio timeline as complete."""
+    actual = probe_media_duration(path)
+    try:
+        expected = float(expected_duration)
+        valid = math.isfinite(expected) and expected > 0
+    except (TypeError, ValueError):
+        expected, valid = 0, False
+    if (not valid or actual is None or not math.isfinite(actual) or actual <= 0
+            or abs(actual - expected) > min(30.0, expected * .02)):
+        raise AudioDownloadIncomplete(
+            f"YouTube audio duration mismatch: expected {expected:g}s, obtained {actual!s}s. "
+            "The incomplete audio was not accepted; retry the download."
+        )
+    return actual
 
 
 @dataclass
@@ -1503,6 +1524,28 @@ def _saved_audio_format(stem, formats, source_language, original_audio):
         return None
 
 
+def _validate_hls_checkpoint(stem: Path, fmt: dict, fragments: list) -> None:
+    """A yt-dlp index alone does not prove its .part contains that prefix.
+
+    Checkpoints may belong to another task for the same source. Keep a valid
+    prefix, but restart a mismatched pair before yt-dlp can skip its segments.
+    """
+    partial = Path(f"{stem}.{fmt.get('ext') or 'mp4'}.part")
+    state = Path(f"{stem}.{fmt.get('ext') or 'mp4'}.ytdl")
+    if not partial.exists() and not state.exists():
+        return
+    try:
+        record = json.loads(state.read_text(encoding="utf-8"))
+        index = record["downloader"]["current_fragment"]["index"]
+        if isinstance(index, bool) or not isinstance(index, int) or not 0 < index <= len(fragments):
+            raise ValueError("Invalid fragment checkpoint")
+        prefix = sum(float(fragment.get("duration") or 0) for fragment in fragments[:index])
+        validate_audio_duration(partial, prefix)
+    except (OSError, ValueError, TypeError, KeyError, AudioDownloadIncomplete):
+        logger.warning("Discarding inconsistent HLS audio checkpoint for %s", stem.parent.name)
+        _discard_output(stem)
+
+
 def _download_direct_audio(url, video_id, dest_stem, task_id, counter):
     estimate = None
     for attempt in range(2):
@@ -1529,6 +1572,16 @@ def _download_direct_audio(url, video_id, dest_stem, task_id, counter):
             except DownloadBudgetExceeded:
                 discard_audio_resume(dest_stem)
                 _discard_output(dest_stem)
+                raise
+            if isinstance(exc, AudioDownloadIncomplete):
+                # A final .mp4 cannot be resumed as a partial. Its checkpoint
+                # may have skipped media: retry cleanly under the SAME budget.
+                discard_audio_resume(dest_stem)
+                _discard_output(dest_stem)
+                if attempt == 0:
+                    report_download_recovery(DownloadRecovery.AUDIO)
+                    continue
+                exc.full_estimate_bytes = estimate
                 raise
             if is_transient_proxy_error(exc):
                 if attempt == 0:
@@ -1611,9 +1664,22 @@ def _download_audio_attempt(
             if "m3u8" in (fmt.get("protocol") or ""):
                 fmt = expand_hls_format(fmt, options, counter, info.get("duration") or 0)
                 fragments = resolve_fragments(fmt)
+                if options.get("_youtube_audio_clock"):
+                    expected = float(info.get("duration") or 0)
+                    coverage = sum(float(f.get("duration") or 0) for f in (fragments or []))
+                    if expected <= 0 or abs(coverage - expected) > min(30.0, expected * .02):
+                        raise AudioDownloadIncomplete(
+                            f"YouTube HLS audio playlist is incomplete: expected {expected:g}s, covers {coverage:g}s."
+                        )
+                    logger.info(
+                        "youtube_audio_playlist video_id=%s format_id=%s fragments=%s duration_seconds=%s task_id=%s",
+                        video_id, fmt.get("format_id"), len(fragments or []), coverage, task_id or "-",
+                    )
             if options.get("_youtube_audio_clock"):
                 options["_youtube_audio_resume"] = True
                 target = _audio_resume_stem(dest_stem, video_id, info, fmt, fragments)
+                if fragments is not None:
+                    _validate_hls_checkpoint(target, fmt, fragments)
                 return native_download_format(options, url, video_id, fmt, target, fragments)
             if fragments is not None:
                 return native_download_format(options, url, video_id, fmt, dest_stem, fragments)
@@ -1672,7 +1738,8 @@ def _download_audio_attempt(
             attempt_started = counter.snapshot()
             try:
                 path = fetch_audio(hls)
-            except DownloadBudgetExceeded as budget_exc:
+                fmt = hls
+            except (DownloadBudgetExceeded, AudioDownloadIncomplete) as budget_exc:
                 _fail("audio_hls", budget_exc, attempt_started)
                 raise
             except Exception as hls_exc:
@@ -1683,6 +1750,13 @@ def _download_audio_attempt(
             # HLS audio is raw ADTS: without a container its length is a
             # bitrate guess, which once cut the last minute off a series.
             path = contain_raw_aac(path)
+        if options.get("_youtube_audio_clock"):
+            measured = validate_audio_duration(path, info.get("duration"))
+            logger.info(
+                "youtube_audio_verified video_id=%s format_id=%s expected_seconds=%s actual_seconds=%s task_id=%s",
+                video_id, fmt.get("format_id"),
+                info.get("duration"), measured, task_id or "-",
+            )
         nbytes = (
             max(0, counter.snapshot() - (started if not hls_retry else attempt_started))
             if options.get("_youtube_audio_resume")

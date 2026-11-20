@@ -96,6 +96,34 @@ TTL. They are scratch, never cross-machine state or published cache assets.
 Completion, cancellation, byte-limit failure and nontransient errors clear this
 staging. Files already removed by an earlier version cannot be recovered.
 
+Direct audio must pass ffprobe duration verification before a success is logged
+or its cache entry is published. The difference from metadata must be no more
+than **both 2% and 30 seconds**. Missing/unreadable durations fail verification.
+HLS playlists with supplied fragment timings must also cover the full source.
+A completed but short file is discarded and retried with fresh metadata under
+the same byte allowance; it is never transcribed or treated as success. Cached
+audio from earlier versions is checked before reuse as well.
+
+Before reusing an HLS checkpoint, the duration in its `.part` must agree with
+the prefix implied by the `.ytdl` fragment index. Compatible checkpoints may
+come from another task for the same video. Inconsistent pairs are discarded
+before yt-dlp can skip fragments. Diagnostic logs record the rendition,
+playlist fragment count and duration, and expected versus probed audio duration.
+An old partial in the canonical cache path is not adopted by the newer hidden,
+format-specific resume directory. The previously reported incident cannot be
+attributed to a checkpoint, playlist or rendition from transfer-byte logs alone.
+
+Before transcription, the active task's `source_duration_seconds` and existing
+minute charge are reconciled with the verified source duration. Refund and
+charge dates are retained; completed/cancelled tasks are not changed by this
+verification. Existing completed tasks are not repaired automatically.
+Direct-audio transcript sidecars, processing checkpoints and cached selections
+carry completeness proof binding source seconds to the transcript's SHA-256.
+Old text, selections, workflow plans and completed render positions without
+that proof are invalidated before reuse. Regenerated word timings and proof are
+saved to the database checkpoint and media sidecar, so another worker can resume
+through the database/bucket without depending on shared scratch files.
+
 An audio timeout does not start full-timeline recovery when compatible audio can
 be resumed, when the full source is estimated above the remaining byte allowance
 (including bitrate/duration estimates), or when no safe estimate is available.
