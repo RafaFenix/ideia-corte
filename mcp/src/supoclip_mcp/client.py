@@ -41,10 +41,6 @@ class AuthNotConfiguredError(SupoClipError):
     """Raised when an authenticated operation is attempted without credentials."""
 
 
-class SupoClipTimeoutError(SupoClipError):
-    """A status request exhausted its HTTP timeout."""
-
-
 def _signed_headers(user_id: str, secret: str) -> Dict[str, str]:
     timestamp = str(int(time.time()))
     payload = f"{user_id}:{timestamp}".encode("utf-8")
@@ -91,7 +87,6 @@ class SupoClipClient:
         params: Optional[Dict[str, Any]] = None,
         json_body: Optional[Dict[str, Any]] = None,
         authenticated: bool = True,
-        timeout_seconds: Optional[float] = None,
     ) -> Any:
         """Make a JSON request and return the decoded body."""
         if authenticated:
@@ -102,15 +97,14 @@ class SupoClipClient:
             headers.update(self._auth_headers())
 
         url = f"{self.settings.api_url}{path}"
-        timeout = self.settings.timeout if timeout_seconds is None else min(self.settings.timeout, timeout_seconds)
         try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
+            async with httpx.AsyncClient(timeout=self.settings.timeout) as client:
                 response = await client.request(
                     method, url, params=params, json=json_body, headers=headers
                 )
         except httpx.TimeoutException as exc:
-            raise SupoClipTimeoutError(
-                f"Request to {path} timed out after {timeout:g}s."
+            raise SupoClipError(
+                f"Request to {path} timed out after {self.settings.timeout:g}s."
             ) from exc
         except httpx.HTTPError as exc:
             raise SupoClipError(f"Could not reach SupoClip at {url}: {exc}") from exc

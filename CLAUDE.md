@@ -2,9 +2,26 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Public repository: no private data
+
+**This repository is public.** Everything written to it or about it is world-readable and cached forever: PR titles and bodies, commit messages, branch names, code comments, tests and fixtures, `CHANGELOG.md` entries, issues, and review comments. None of it may contain:
+
+- Monitoring issue IDs or URLs (PostHog, Axiom, Sentry, or any other tool), or links into any internal dashboard.
+- Task, job, user, account, Stripe, customer, subscription, invoice, or charge IDs (including `cus_`, `sub_`, `in_`, `ch_`, `pi_`, `re_` ids and UUIDs that belong to real records).
+- Emails, names, usernames, IP addresses, hostnames, or server names (render workers, cloud machines, and the like).
+- Internal URLs or filesystem paths that reveal private data.
+- Secrets of any kind.
+- Raw log excerpts, stack traces, or screenshots that contain any of the above.
+
+How to write instead:
+- Describe incidents generically: "one YouTube task failed three times", "about 20 users were affected on 17 Nov", "a render worker lost its database connection".
+- Tests and fixtures use synthetic IDs and `example.com` addresses, never values copied from production.
+- Before opening or updating a PR, re-read the title, body, and every commit message for the items above. Fix the commit before pushing: history on a public repo cannot be taken back.
+- Investigation notes that need real IDs stay outside the repo (private chat, the operator's notes).
+
 ## Project Overview
 
-SupoClip is an open-source alternative to OpusClip — an AI-powered video clipping tool that transforms long-form content into viral short clips. AGPL-3.0 licensed.
+SupoClip is an open-source alternative to OpusClip — an AI-powered video clipping tool that transforms long-form content into viral short clips. Licensed under the SupoClip Noncommercial Source License (v1.1: noncommercial use plus monetized use by individual creators; companies, agencies, client work and paid hosting need written permission). Keep the copies in `backend/` and `mcp/` in sync with the root `LICENSE` for packaging.
 
 ## Development Commands
 
@@ -138,6 +155,7 @@ PostgreSQL 15. Schema in `init.sql`. Mixed naming conventions:
 | `src/workers/job_queue.py` | Job queue management |
 | `src/workers/progress.py` | Real-time progress via Redis |
 | `src/workers/video_admission.py` | Per-account render slots; holds a job until its upload is in the bucket |
+| `src/workers/host_jobs.py` | Which video jobs run on which machine (Redis); read by the render autoscaler (`deploy/autoscaler/`, `docs/autoscaling.md`) |
 | `src/workers/media_cleanup.py` | Deletion outbox, orphan sweeps, per-machine scratch cleanup |
 | `src/editor_state.py` | Clip studio sessions, drafts and export/combine jobs in PostgreSQL |
 | `src/local_volume.py` | Id of the disk behind `TEMP_DIR`; tags rows that name a local path |
@@ -374,6 +392,14 @@ Personalized analyses skip the shared `processing_cache` analysis entry.
 - **Platform approvals gate real users:** TikTok only allows sandbox target users until its audit,
   Instagram only app testers until Meta review, and YouTube uploads from an unaudited project stay
   private. Provider app IDs and setup notes are in `docs/configuration.md`.
+
+### Account email change
+
+Settings → Account changes the sign-in email after two codes (current address, then new address):
+`frontend/src/server/email-change.ts` (codes, limits per user/IP/target address, atomic switch + other-session
+sign-out + `email_change_log`),
+`email-change-billing.ts` (every Stripe customer, rolled back on failure), route `/api/account/email-change`,
+emails via backend `POST /account/email-change-email`. Design and limits: `docs/email-change.md`.
 
 ### Clip studio (editor)
 
