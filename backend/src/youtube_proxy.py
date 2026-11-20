@@ -8,6 +8,8 @@ server IP instead of the proxy.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import math
 import re
@@ -147,6 +149,32 @@ class AudioDownloadForbidden(YouTubeDownloadError):
     """Direct audio was forbidden and the HLS audio retry did not produce a file."""
 
 
+class AudioDownloadInterrupted(YouTubeDownloadError):
+    """A direct audio transfer exhausted its resumable transport retries."""
+
+    def __init__(self, message, *, full_estimate_bytes=None, resumable=False):
+        super().__init__(message)
+        self.full_estimate_bytes = full_estimate_bytes
+        self.resumable = resumable
+
+
+@dataclass
+class _AudioTransferClock:
+    idle_seconds: float
+    deadline: float
+
+    def on_new_bytes(self):
+        self.deadline = time.monotonic() + self.idle_seconds
+
+    def check(self):
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise DownloadDeadlineExceeded(
+                f"YouTube audio timed out after {self.idle_seconds:g} seconds without new data"
+            )
+        return remaining
+
+
 _SECTION_IDLE_SECONDS = 60
 
 
@@ -163,6 +191,9 @@ class _SectionTransferClock:
 
 def _check_deadline(options: dict) -> float:
     check_download_cancelled()
+    audio_clock = options.get("_youtube_audio_clock")
+    if audio_clock:
+        return audio_clock.check()
     section_clock = options.get("_youtube_section_clock")
     deadline = section_clock.deadline if section_clock else options.get("_youtube_deadline")
     remaining = deadline - time.monotonic() if deadline is not None else 20.0
@@ -189,9 +220,12 @@ def _proxy_client(options: dict):
                 if isinstance(request, str):
                     request = Request(request)
                 # Bound each socket operation by the remaining attempt time.
-                request.extensions["timeout"] = min(20.0, remaining)
+                request.extensions["timeout"] = min(
+                    options["_youtube_audio_clock"].idle_seconds if options.get("_youtube_audio_clock") else 20.0,
+                    remaining,
+                )
                 response = original_open(request)
-                return _BudgetResponse(response, counter, options["_youtube_accounting"]) if counter else response
+                return _BudgetResponse(response, counter, options["_youtube_accounting"], options.get("_youtube_audio_clock")) if counter else response
 
             client.urlopen = bounded_open
         try:
@@ -206,8 +240,9 @@ def _proxy_client(options: dict):
 class _BudgetResponse:
     """Meter native response bodies before yt-dlp can write or buffer them."""
 
-    def __init__(self, response, budget, accounting):
+    def __init__(self, response, budget, accounting, audio_clock=None):
         self.response, self._youtube_budget, self.accounting = response, budget, accounting
+        self.audio_clock = audio_clock
         self._closed = False
 
     def __getattr__(self, name):
@@ -216,6 +251,8 @@ class _BudgetResponse:
     def read(self, size=-1):
         try:
             self._youtube_budget.check()
+            if self.audio_clock:
+                self.audio_clock.check()
             if size is None or size < 0:
                 chunks = []
                 while chunk := self.read(65_536):
@@ -224,6 +261,8 @@ class _BudgetResponse:
             remaining = self._youtube_budget.limit - self._youtube_budget.snapshot()
             amount = min(size, 65_536, max(1, remaining + 1)) if self._youtube_budget.limit else min(size, 65_536)
             data = self.response.read(amount)
+            if data and self.audio_clock:
+                self.audio_clock.on_new_bytes()
             self.accounting["raw"] = True
             self._youtube_budget.add(len(data))
             return data
@@ -557,6 +596,9 @@ def download_options(
 
     def bounded_progress(status):
         received = count_bytes(status)
+        audio_clock = options.get("_youtube_audio_clock")
+        if received and audio_clock:
+            audio_clock.on_new_bytes()
         _check_deadline(options)
         section_clock = options.get("_youtube_section_clock")
         if received and section_clock:
@@ -574,7 +616,7 @@ def is_transient_proxy_error(exc: BaseException) -> bool:
     for error in _exception_chain(exc):
         if isinstance(error, (DownloadBudgetExceeded, PartialDownloadUnavailable)):
             return False
-        if isinstance(error, (DownloadDeadlineExceeded, TimeoutError, ConnectionError)):
+        if isinstance(error, (DownloadDeadlineExceeded, AudioDownloadInterrupted, TimeoutError, ConnectionError)):
             transient = True
         message = str(error).lower()
         if any(marker in message for marker in (
@@ -1176,7 +1218,9 @@ def expand_hls_format(fmt: dict, options: dict, budget: ByteBudget, duration: fl
         fragments = parse_hls_fragments(payload.decode("utf-8"), base_url, duration)
     except (DownloadBudgetExceeded, DownloadDeadlineExceeded, PartialDownloadUnavailable):
         raise
-    except Exception:
+    except Exception as exc:
+        if options.get("_youtube_audio_clock") and is_transient_proxy_error(exc):
+            raise DownloadDeadlineExceeded("YouTube audio playlist transfer timed out or was interrupted") from None
         raise YouTubeDownloadError("Could not fetch the HLS media playlist through the proxy") from None
     return dict(fmt, fragments=fragments)
 
@@ -1286,7 +1330,12 @@ def native_download_format(
     params = dict(options)
     params.pop("download_ranges", None)
     params["outtmpl"] = str(dest_stem) + ".%(ext)s"
-    params["overwrites"] = True
+    params["overwrites"] = not options.get("_youtube_audio_resume", False)
+    if options.get("_youtube_audio_resume"):
+        params["continuedl"] = True
+        partial = Path(str(dest_stem) + "." + (fmt.get("ext") or "mp4") + ".part")
+        if partial.exists():
+            options.get("_youtube_seen_bytes", {})[str(partial).removesuffix(".part")] = partial.stat().st_size
     params["external_downloader"] = {"default": "native"}
     params["skip_unavailable_fragments"] = False
     info: dict[str, Any] = {
@@ -1336,6 +1385,11 @@ def native_download_format(
             incomplete_filename=str(dest_stem) + "." + info["ext"],
         )
         raise
+    if options.get("_youtube_audio_resume"):
+        complete = Path(str(dest_stem) + "." + info["ext"])
+        if not complete.is_file() or complete.stat().st_size <= 0:
+            raise YouTubeDownloadError("yt-dlp did not complete the audio file")
+        return complete
     return _find_download(dest_stem)
 
 
@@ -1382,6 +1436,118 @@ def _account_file(path: Path, budget: ByteBudget, seen_before: int) -> int:
     return max(0, budget.snapshot() - seen_before)
 
 
+def _full_source_estimate(info: dict) -> Optional[int]:
+    formats = info.get("formats") or []
+    tracks = [pick_video_format(formats), pick_audio_format(formats, modest=False, source_language=_video_language(info))]
+    total = 0
+    for track in tracks:
+        if not track:
+            return None
+        size = track.get("filesize") or track.get("filesize_approx")
+        if not size:
+            rate = track.get("tbr") or ((track.get("vbr") or 0) + (track.get("abr") or 0))
+            size = rate * float(info.get("duration") or 0) * 1000 / 8
+        if not size or not math.isfinite(float(size)) or float(size) <= 0:
+            return None
+        total += math.ceil(float(size))
+    return total
+
+
+def _audio_resume_root(stem: Path) -> Path:
+    return stem.parent / f".{stem.name}.resume"
+
+
+def discard_audio_resume(stem: Path) -> None:
+    shutil.rmtree(_audio_resume_root(stem), ignore_errors=True)
+
+
+def _audio_resume_stem(stem: Path, video_id: str, info: dict, fmt: dict, fragments) -> Path:
+    # Signed URLs may rotate. Resume only the same format/language and source
+    # timeline, retaining yt-dlp's own .part and .ytdl consistency checks.
+    identity = {key: fmt.get(key) for key in ("format_id", "protocol", "ext", "acodec", "vcodec", "language", "filesize")}
+    identity.update(video_id=video_id, duration=float(info["duration"]) if info.get("duration") is not None else None)
+    if fragments is not None:
+        identity["fragments"] = [
+            [f.get(key) for key in ("is_init", "media_sequence", "duration", "start_time", "end_time")]
+            for f in fragments
+        ]
+    digest = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:20]
+    target = _audio_resume_root(stem) / digest / "audio"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    record = _audio_resume_root(stem) / "selection.json"
+    temporary = record.with_suffix(".tmp")
+    temporary.write_text(json.dumps({"format_id": str(fmt.get("format_id")), "profile": digest}), encoding="utf-8")
+    temporary.replace(record)
+    return target
+
+
+def _saved_audio_format(stem, formats, source_language, original_audio):
+    try:
+        record = json.loads((_audio_resume_root(stem) / "selection.json").read_text(encoding="utf-8"))
+        if not isinstance(record, dict):
+            return None
+        if not re.fullmatch(r"[a-f0-9]{20}", record.get("profile", "")):
+            return None
+        saved = _audio_resume_root(stem) / record["profile"]
+        if not any(path.is_file() and path.stat().st_size > 0 and (".part" in path.name or path.suffix in {".mp4", ".m4a", ".webm", ".opus"}) for path in saved.glob("audio.*")):
+            return None
+        allowed = _prefer_original_audio(
+            [fmt for fmt in formats if _is_audio_only(fmt)], source_language, original_audio=original_audio,
+        )
+        candidate = next((fmt for fmt in allowed if str(fmt.get("format_id")) == record["format_id"]), None)
+        if candidate is not None:
+            return candidate
+        hls = pick_hls_audio_format(formats, source_language=source_language, original_audio=original_audio)
+        return hls if hls and str(hls.get("format_id")) == record["format_id"] else None
+    except (OSError, ValueError, TypeError, KeyError):
+        return None
+
+
+def _download_direct_audio(url, video_id, dest_stem, task_id, counter):
+    estimate = None
+    for attempt in range(2):
+        options = download_options(task_id, video_id, counter)
+        idle = max(1, get_config().youtube_proxy_timeout_seconds)
+        options["_youtube_audio_clock"] = _AudioTransferClock(idle, time.monotonic() + idle)
+        try:
+            counter.check()
+            path = _download_audio_attempt(
+                url, video_id, dest_stem, task_id=task_id, budget=counter, options=options,
+            )
+            complete = dest_stem.with_suffix(path.suffix)
+            path.replace(complete)
+            discard_audio_resume(dest_stem)
+            return complete
+        except (DownloadBudgetExceeded, DownloadCancelled):
+            discard_audio_resume(dest_stem)
+            _discard_output(dest_stem)
+            raise
+        except Exception as exc:
+            estimate = options.get("_youtube_full_estimate_bytes", estimate)
+            try:
+                counter.check()
+            except DownloadBudgetExceeded:
+                discard_audio_resume(dest_stem)
+                _discard_output(dest_stem)
+                raise
+            if is_transient_proxy_error(exc):
+                if attempt == 0:
+                    report_download_recovery(DownloadRecovery.CONNECTION)
+                    continue
+                resumable = any(path.stat().st_size for path in _audio_resume_root(dest_stem).rglob("*.part*"))
+                raise AudioDownloadInterrupted(
+                    "YouTube audio transfer was interrupted. Retry to resume saved audio progress.",
+                    full_estimate_bytes=estimate, resumable=resumable,
+                ) from exc
+            discard_audio_resume(dest_stem)
+            _discard_output(dest_stem)
+            raise
+        except BaseException:
+            discard_audio_resume(dest_stem)
+            _discard_output(dest_stem)
+            raise
+
+
 def download_audio(
     url: str,
     video_id: str,
@@ -1391,6 +1557,8 @@ def download_audio(
     budget: Optional[ByteBudget] = None,
 ) -> Path:
     counter = budget or ByteBudget(get_config().youtube_download_max_bytes)
+    if counter.native_only and direct_sections_enabled():
+        return _download_direct_audio(url, video_id, dest_stem, task_id, counter)
     return _with_proxy_retry(
         lambda options: _download_audio_attempt(
             url, video_id, dest_stem, task_id=task_id, budget=counter, options=options,
@@ -1439,15 +1607,22 @@ def _download_audio_attempt(
         if direct_sections_enabled():
             if info.get("is_live") or info.get("live_status") == "is_live":
                 raise PartialDownloadUnavailable("Direct audio requires a finished video")
+            fragments = None
             if "m3u8" in (fmt.get("protocol") or ""):
                 fmt = expand_hls_format(fmt, options, counter, info.get("duration") or 0)
-                return native_download_format(
-                    options, url, video_id, fmt, dest_stem, resolve_fragments(fmt),
-                )
+                fragments = resolve_fragments(fmt)
+            if options.get("_youtube_audio_clock"):
+                options["_youtube_audio_resume"] = True
+                target = _audio_resume_stem(dest_stem, video_id, info, fmt, fragments)
+                return native_download_format(options, url, video_id, fmt, target, fragments)
+            if fragments is not None:
+                return native_download_format(options, url, video_id, fmt, dest_stem, fragments)
         return native_download_format(options, url, video_id, fmt, dest_stem)
 
     try:
         info = extract_video_info(url, options)
+        if options.get("_youtube_audio_clock"):
+            options["_youtube_full_estimate_bytes"] = _full_source_estimate(info)
         formats = info.get("formats") or []
         source_language = _video_language(info)
         original_audio = _original_audio_resolution(formats, source_language)
@@ -1457,6 +1632,11 @@ def _download_audio_attempt(
             source_language=source_language,
             original_audio=original_audio,
         )
+        if options.get("_youtube_audio_clock"):
+            saved = _saved_audio_format(dest_stem, formats, source_language, original_audio)
+            if saved is not None:
+                fmt = saved
+                hls_retry = "m3u8" in (saved.get("protocol") or "")
         if not fmt:
             raise YouTubeDownloadError("No audio format is available")
         attempt_started = counter.snapshot()
@@ -1499,10 +1679,15 @@ def _download_audio_attempt(
                 _discard_output(dest_stem)
                 _fail("audio_hls", hls_exc, attempt_started)
                 raise AudioDownloadForbidden("HLS audio download failed") from hls_exc
+        if hls_retry:
             # HLS audio is raw ADTS: without a container its length is a
             # bitrate guess, which once cut the last minute off a series.
             path = contain_raw_aac(path)
-        nbytes = _account_file(path, counter, started if not hls_retry else attempt_started)
+        nbytes = (
+            max(0, counter.snapshot() - (started if not hls_retry else attempt_started))
+            if options.get("_youtube_audio_resume")
+            else _account_file(path, counter, started if not hls_retry else attempt_started)
+        )
         log_youtube_attempt(
             provider=_transport_provider(options),
             video_id=video_id,

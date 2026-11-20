@@ -25,15 +25,19 @@ from .download_cancellation import run_local_process
 from .download_progress import DownloadRecovery, report_download_recovery
 from .youtube_proxy import (
     AudioDownloadForbidden,
+    AudioDownloadInterrupted,
     ByteBudget,
     DownloadBudgetExceeded,
     PartialDownloadUnavailable,
     YouTubeDownloadError,
     YouTubeGeoRestrictedError,
     is_geo_restricted_error,
+    is_transient_proxy_error,
     YOUTUBE_DOWNLOAD_PROVIDER_YTDLP_PROXY,
     capped_height,
     download_audio,
+    direct_budget_required,
+    discard_audio_resume,
     download_section_file,
     log_youtube_attempt,
     sections_enabled,
@@ -986,6 +990,9 @@ def download_analysis_source(
     """
     failure = None
     try_sections = False
+    direct = direct_budget_required() or (budget is not None and budget.native_only)
+    if direct and budget is None:
+        budget = ByteBudget(get_config().youtube_download_max_bytes)
     try:
         return download_audio_for_job(url, video_id, task_id=task_id, budget=budget), True
     except DownloadBudgetExceeded:
@@ -993,8 +1000,26 @@ def download_analysis_source(
     except AudioDownloadForbidden as exc:
         failure = exc
         try_sections = _positive_duration(duration) is not None
+    except AudioDownloadInterrupted as exc:
+        failure = exc
+        try_sections = _positive_duration(duration) is not None
     except Exception as exc:
         failure = exc
+
+    if direct and is_transient_proxy_error(failure):
+        estimate = getattr(failure, "full_estimate_bytes", None)
+        remaining = max(0, budget.limit - budget.snapshot()) if budget.limit else None
+        if getattr(failure, "resumable", False) or estimate is None or (remaining is not None and estimate > remaining):
+            size = (
+                f"Full-video recovery is estimated at {estimate} bytes with {remaining} bytes remaining in the job limit. "
+                if estimate is not None and remaining is not None
+                else "Full-video recovery cannot be confirmed to fit the download allowance. "
+            )
+            raise AudioDownloadInterrupted(
+                "YouTube audio transfer stalled or timed out. " + size
+                + "No full video was started. Retry to resume compatible saved audio, or upload the file.",
+                full_estimate_bytes=estimate, resumable=getattr(failure, "resumable", False),
+            ) from failure
 
     if try_sections:
         report_download_recovery(DownloadRecovery.FULL_VIDEO)
@@ -1046,6 +1071,7 @@ def download_audio_for_job(
         manifest = _load_manifest(directory, video_id)
         existing = _audio_path(directory, manifest)
         if existing:
+            discard_audio_resume(directory / f"audio-{AUDIO_POLICY}")
             log_youtube_attempt(
                 provider="cache",
                 video_id=video_id,
@@ -1059,6 +1085,10 @@ def download_audio_for_job(
             raise YouTubeDownloadError("Audio-first download requires YOUTUBE_PROXY_URL or YOUTUBE_SECTIONS_DIRECT")
         # Hold the per-video lock through download and manifest publication.
         # Concurrent jobs must not overwrite the same native downloader files.
+        if direct_budget_required(runtime):
+            # Resumable data is local scratch, not published cache state. Give
+            # incomplete audio the local cache TTL before transfer completes.
+            _save_manifest(directory, manifest)
         downloaded = download_audio(
             url, video_id, directory / f"audio-{AUDIO_POLICY}", task_id=task_id, budget=budget,
         )

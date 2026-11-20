@@ -509,7 +509,13 @@ that same budget; partial files are removed when it fails. Ongoing lives and
 sources with no safe formats fail clearly. This mode skips API Router, Apify and
 the legacy direct fallback so no transfer can escape the byte counter. Keep
 `YOUTUBE_DOWNLOAD_MAX_BYTES` positive (`0` disables it) and below available disk.
-The existing `YOUTUBE_PROXY_TIMEOUT_SECONDS` also bounds direct attempts.
+`YOUTUBE_PROXY_TIMEOUT_SECONDS` is an inactivity limit for direct audio: new
+response bytes renew it, so slow long audio is not limited to 300 seconds total.
+Proxy attempts and direct video sections keep their existing deadlines. The
+worker's independent job timeout still applies. Direct audio retries resume
+compatible local HTTP/HLS/DASH checkpoints without charging saved bytes again;
+after an audio timeout, full recovery is refused if the estimated source exceeds
+the remaining allowance, is unknown, or resumable audio is already available.
 
 Direct HLS playlist metadata can scale from 4 MB to 2 MB per source hour
 (rounded up), capped at 64 MB; incremental reads also honor the shared byte

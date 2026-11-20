@@ -6,6 +6,7 @@ Add a line here when a pull request changes something a user can see. Use **New*
 
 ## 2026-11-20
 
+- **Fixed:** Slow YouTube audio downloads in direct mode keep going while data arrives, resume compatible HTTP/HLS partials on retry, and avoid an oversized full-video recovery after an audio timeout. ([#3](https://github.com/RafaFenix/ideia-corte/pull/3))
 - **Fixed:** Direct YouTube downloads keep the same byte allowance through recovery, so an audio failure cannot start an unrestricted full-video download. Long recordings can use larger audio playlists within that allowance. ([#3](https://github.com/RafaFenix/ideia-corte/pull/3))
 - **Fixed:** Cancelling a YouTube download stops its network transfer and downloader processes before releasing its files, with direct sections enabled or disabled. ([#3](https://github.com/RafaFenix/ideia-corte/pull/3))
 - **Fixed:** Failed and cancelled YouTube downloads remove their partial files. Cleanup also finds older downloader fragments and state files left in the temporary directory. ([#3](https://github.com/RafaFenix/ideia-corte/pull/3))

@@ -209,7 +209,18 @@ def managed_ytdlp_client(options):
                 # A blocked socket cannot keep the cancelled thread alive forever.
                 request.extensions["timeout"] = min(5.0, float(request.extensions.get("timeout") or 30))
                 try:
-                    return CancellableResponse(original(request), control)
+                    response = CancellableResponse(original(request), control)
+                    audio_clock = options.get("_youtube_audio_clock")
+                    if audio_clock:
+                        # Connection setup stays bounded above. Once headers
+                        # arrive, audio may wait for its configured idle window;
+                        # cancellation still interrupts the registered socket.
+                        for connection in response.sockets:
+                            try:
+                                connection.settimeout(audio_clock.idle_seconds)
+                            except OSError:
+                                pass
+                    return response
                 except BaseException:
                     control.check()
                     raise

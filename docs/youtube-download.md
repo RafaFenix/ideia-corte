@@ -16,7 +16,7 @@ The HLS retry does not pass a format string such as `bestaudio[protocol^=m3u8]`.
 
 Long selections are requested in windows of up to 60 seconds of source video. Each window is saved as soon as it completes, including any extra frames in the final source fragment. A retry reuses those saved windows.
 
-Audio and individual windows retry a transient timeout or proxy connection failure once with fresh metadata and a new session. An audio retry has a 60-second deadline. For a window, 60 seconds without new media bytes triggers recovery. A window that keeps receiving bytes may use the time remaining in that provider's overall allowance for the window (six minutes by default), including on the retry. All attempts count against the same job byte allowance.
+Audio and individual windows retry a transient timeout or proxy connection failure once with fresh metadata and a new session. Through the proxy, an audio retry has a 60-second deadline. Direct audio uses the idle timeout described below. For a window, 60 seconds without new media bytes triggers recovery. A window that keeps receiving bytes may use the time remaining in that provider's overall allowance for the window (six minutes by default), including on the retry. All attempts count against the same job byte allowance.
 
 Uploads and non-YouTube download paths are unchanged. Without a proxy and with `YOUTUBE_SECTIONS_DIRECT=false` (the default), YouTube jobs still download a full file, capped at 1080p, and that file is cached too.
 
@@ -72,13 +72,35 @@ without safe formats fail with a clear message. Direct opt-in does not enter
 API Router, Apify or the legacy unbounded yt-dlp fallback. A limit of `0` disables
 the byte cap, as on the proxy path; keep a positive limit for bounded disk use.
 
-Direct mode uses the existing attempt deadlines (`YOUTUBE_PROXY_TIMEOUT_SECONDS`)
-and cannot bypass YouTube IP/bot restrictions. Test a short public video in an
+Direct audio uses `YOUTUBE_PROXY_TIMEOUT_SECONDS` as a no-new-data timeout
+(default 300 seconds), rather than a total transfer deadline. Incoming native
+response bytes advance that clock, including during HLS recovery. A progressing
+audio transfer can therefore run longer than five minutes; the shared byte cap,
+cancellation and the worker's independent three-hour job deadline still apply.
+Proxy attempts and direct video-section deadlines retain their existing limits.
+Direct mode cannot bypass YouTube IP/bot restrictions. Test a short public video in an
 isolated worker first, then the long source only through audio and transcription.
 Record `youtube_bytes` (provider `yt_dlp`, kinds `audio` / `section` / `full`) and
 free disk before and after. Use a dedicated QA database, Redis and media volumes;
-never run this canary against the user's database. For long audio, set a suitable
-attempt timeout while keeping the byte cap below available disk space.
+never run this canary against the user's database. Keep the byte cap below
+available disk space.
+
+Direct audio transport retries preserve yt-dlp's `.part`/`.ytdl` checkpoints in
+format-specific local staging, re-extract metadata for fresh signed URLs, and
+resume HTTP ranges or completed HLS/DASH fragments when supported. Format,
+language, duration and HLS timeline identity must match before reuse. Existing
+bytes are not charged again; newly transferred bytes and retry metadata share
+the same job allowance. After exhausted transient retries, compatible partials
+remain available on that worker's disk for a later retry, under the source-cache
+TTL. They are scratch, never cross-machine state or published cache assets.
+Completion, cancellation, byte-limit failure and nontransient errors clear this
+staging. Files already removed by an earlier version cannot be recovered.
+
+An audio timeout does not start full-timeline recovery when compatible audio can
+be resumed, when the full source is estimated above the remaining byte allowance
+(including bitrate/duration estimates), or when no safe estimate is available.
+The task fails clearly and asks for an audio retry or file upload. A small known
+full source can still use recovery when there is no partial audio to resume.
 
 For long recordings, direct HLS playlists may grow from 4 MB to 2 MB per
 started source hour, capped at 64 MB. They are read in blocks of at most 64 KiB,
@@ -98,8 +120,10 @@ the native read after at most one extra byte and prevents another provider retry
 YouTube yt-dlp downloads poll the task's cancellation flag during every download
 stage. Cancelling signals the reader, kills only subprocess groups owned by that
 download (including ffmpeg recovery/remuxing), and waits for the writer to stop
-before cleaning files. Socket reads in a cancellable operation have a five-second
-timeout. Cancelling the worker's awaiting coroutine uses the same shutdown path.
+before cleaning files. Cancellable connections have a five-second setup timeout;
+direct audio reads use the configured idle timeout and cancellation shuts down
+their registered sockets immediately. Other reads retain a five-second timeout.
+Cancelling the worker's awaiting coroutine uses the same shutdown path.
 This applies with `YOUTUBE_SECTIONS_DIRECT` enabled or disabled.
 
 New legacy downloads use private `ytdl-<video_id>-.../` staging directories.
