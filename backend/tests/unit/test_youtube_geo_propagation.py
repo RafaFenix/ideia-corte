@@ -1,6 +1,7 @@
 """A known country restriction survives exhausted independent download paths."""
 
 from unittest.mock import Mock
+from pathlib import Path
 
 import pytest
 from yt_dlp.utils import DownloadError, GeoRestrictedError
@@ -96,6 +97,7 @@ def test_direct_download_succeeds_when_proxy_metadata_is_geo_blocked(config, mon
     class DirectClient:
         def __init__(self, options):
             assert not options.get("proxy")
+            self.source = Path(options["outtmpl"].replace("%(ext)s", "mp4"))
 
         def __enter__(self):
             return self
@@ -105,11 +107,13 @@ def test_direct_download_succeeds_when_proxy_metadata_is_geo_blocked(config, mon
 
         def download(self, urls):
             downloaded.extend(urls)
-            source.write_bytes(b"complete video")
+            self.source.write_bytes(b"complete video")
 
     monkeypatch.setattr(youtube_utils.yt_dlp, "YoutubeDL", DirectClient)
 
-    assert youtube_utils.download_youtube_video(URL, quality="720") == source
+    result = youtube_utils.download_youtube_video(URL, quality="720")
+    assert result.read_bytes() == b"complete video"
+    assert result.parent.name.startswith(f"ytdl-{VIDEO_ID}-")
     assert downloaded == [URL]
     blocked_metadata.assert_not_called()
 

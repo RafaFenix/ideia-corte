@@ -4,7 +4,17 @@ What changed in SupoClip for people using the product. Newest dates are first.
 
 Add a line here when a pull request changes something a user can see. Use **New**, **Improved**, **Fixed**, or **Under the hood**, describe the change in plain language, and link the pull request. Skip internal-only work, or fold it into one **Under the hood** line. Do not include customer names, email addresses, user IDs, or anything else private.
 
+## 2026-11-20
+
+- **Fixed:** Direct YouTube audio is checked against the full recording duration before transcription. Incomplete audio and inconsistent resume checkpoints are retried, old transcripts and selections without completeness proof are regenerated, and source-minute accounting uses the verified source length. ([#3](https://github.com/RafaFenix/ideia-corte/pull/3))
+- **Fixed:** Slow YouTube audio downloads in direct mode keep going while data arrives, resume compatible HTTP/HLS partials on retry, and avoid an oversized full-video recovery after an audio timeout. ([#3](https://github.com/RafaFenix/ideia-corte/pull/3))
+- **Fixed:** Direct YouTube downloads keep the same byte allowance through recovery, so an audio failure cannot start an unrestricted full-video download. Long recordings can use larger audio playlists within that allowance. ([#3](https://github.com/RafaFenix/ideia-corte/pull/3))
+- **Fixed:** Cancelling a YouTube download stops its network transfer and downloader processes before releasing its files, with direct sections enabled or disabled. ([#3](https://github.com/RafaFenix/ideia-corte/pull/3))
+- **Fixed:** Failed and cancelled YouTube downloads remove their partial files. Cleanup also finds older downloader fragments and state files left in the temporary directory. ([#3](https://github.com/RafaFenix/ideia-corte/pull/3))
+
 ## 2026-11-19
+
+- **Improved:** Self-hosted workers can opt in to downloading YouTube audio first, including recorded livestream audio, and only the selected video sections without a proxy, with a shared download limit and reusable cache. ([#3](https://github.com/RafaFenix/ideia-corte/pull/3))
 
 - **Under the hood:** The web app and its matching lint configuration now use Next.js 15.5.29. ([#2](https://github.com/RafaFenix/ideia-corte/pull/2))
 - **Fixed:** Uploads whose video length is slow to read now return a clear retry message before the connection times out. MP4 recordings with fragments, including OBS recordings, are measured through their final fragment before checking your minutes and video limit. ([#2](https://github.com/RafaFenix/ideia-corte/pull/2))

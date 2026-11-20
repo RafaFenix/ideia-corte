@@ -21,24 +21,33 @@ from pathlib import Path
 from typing import Callable, Iterable, Optional
 
 from .config import get_config
+from .download_cancellation import run_local_process
 from .download_progress import DownloadRecovery, report_download_recovery
 from .youtube_proxy import (
     AudioDownloadForbidden,
+    AudioDownloadIncomplete,
+    AudioDownloadInterrupted,
     ByteBudget,
     DownloadBudgetExceeded,
     PartialDownloadUnavailable,
     YouTubeDownloadError,
     YouTubeGeoRestrictedError,
     is_geo_restricted_error,
+    is_transient_proxy_error,
     YOUTUBE_DOWNLOAD_PROVIDER_YTDLP_PROXY,
     capped_height,
     download_audio,
+    direct_budget_required,
+    discard_audio_resume,
+    download_options,
+    validate_audio_duration,
     download_section_file,
     log_youtube_attempt,
-    proxy_configured,
+    sections_enabled,
     public_download_error,
     redact_secrets,
 )
+from . import youtube_proxy as youtube_transport
 
 logger = logging.getLogger(__name__)
 
@@ -839,7 +848,7 @@ def _discard_staged_download(video_id: str, source: Path, dest: Path) -> None:
     transcript = source.with_suffix(".transcript_cache.json")
     if transcript.exists() and transcript.resolve() != dest.with_suffix(".transcript_cache.json").resolve():
         transcript.unlink(missing_ok=True)
-    if staging.name.startswith((f"apify-{video_id}-", f"proxy-{video_id}-")):
+    if staging.name.startswith((f"apify-{video_id}-", f"proxy-{video_id}-", f"ytdl-{video_id}-")):
         shutil.rmtree(staging, ignore_errors=True)
 
 
@@ -975,7 +984,7 @@ def download_analysis_source(
     duration: Optional[float] = None,
     download_full: Callable[[], Optional[Path]],
 ) -> tuple[Optional[Path], bool]:
-    """Return ``(path, audio_first)`` for a proxied YouTube job.
+    """Return ``(path, audio_first)`` for an audio/sections YouTube job.
 
     Healthy jobs still take the modest https audio pass. When that pass fails
     with HTTP 403 (the HLS retry lives inside ``download_audio``), the full
@@ -985,15 +994,37 @@ def download_analysis_source(
     """
     failure = None
     try_sections = False
+    direct = direct_budget_required() or (budget is not None and budget.native_only)
+    if direct and budget is None:
+        budget = ByteBudget(get_config().youtube_download_max_bytes)
     try:
-        return download_audio_for_job(url, video_id, task_id=task_id, budget=budget), True
+        audio_options = {"expected_duration": duration} if direct else {}
+        return download_audio_for_job(url, video_id, task_id=task_id, budget=budget, **audio_options), True
     except DownloadBudgetExceeded:
         raise
     except AudioDownloadForbidden as exc:
         failure = exc
         try_sections = _positive_duration(duration) is not None
+    except AudioDownloadInterrupted as exc:
+        failure = exc
+        try_sections = _positive_duration(duration) is not None
     except Exception as exc:
         failure = exc
+
+    if direct and is_transient_proxy_error(failure):
+        estimate = getattr(failure, "full_estimate_bytes", None)
+        remaining = max(0, budget.limit - budget.snapshot()) if budget.limit else None
+        if getattr(failure, "resumable", False) or estimate is None or (remaining is not None and estimate > remaining):
+            size = (
+                f"Full-video recovery is estimated at {estimate} bytes with {remaining} bytes remaining in the job limit. "
+                if estimate is not None and remaining is not None
+                else "Full-video recovery cannot be confirmed to fit the download allowance. "
+            )
+            raise AudioDownloadInterrupted(
+                "YouTube audio is incomplete or its transfer was interrupted. " + size
+                + "No full video was started. Retry to resume compatible saved audio, or upload the file.",
+                full_estimate_bytes=estimate, resumable=getattr(failure, "resumable", False),
+            ) from failure
 
     if try_sections:
         report_download_recovery(DownloadRecovery.FULL_VIDEO)
@@ -1035,16 +1066,39 @@ def download_audio_for_job(
     *,
     task_id: Optional[str] = None,
     budget: Optional[ByteBudget] = None,
+    expected_duration: Optional[float] = None,
 ) -> Path:
-    """Return cached full-duration audio, downloading it through the proxy when needed."""
+    """Return cached full-duration audio, downloading it with the selected transport."""
     runtime = get_config()
+    direct = direct_budget_required(runtime)
+    if direct and budget is None:
+        budget = ByteBudget(runtime.youtube_download_max_bytes)
     sweep_expired_cache(runtime)
     directory = cache_dir_for(video_id, runtime)
     with _cache_lock(directory):
         _restore_remote_cache(video_id, directory)
         manifest = _load_manifest(directory, video_id)
         existing = _audio_path(directory, manifest)
+        if existing and direct:
+            expected = _positive_duration(expected_duration) or _positive_duration(manifest.get("audio_source_duration"))
+            if expected is None:
+                # Pre-fix cache entries have no proof of full source coverage.
+                options = download_options(task_id, video_id, budget)
+                expected = youtube_transport.extract_video_info(url, options).get("duration")
+            try:
+                measured = validate_audio_duration(existing, expected)
+            except AudioDownloadIncomplete:
+                existing.unlink(missing_ok=True)
+                existing.with_suffix(".transcript_cache.json").unlink(missing_ok=True)
+                manifest["audio"] = None
+                manifest.pop("audio_source_duration", None)
+                _save_manifest(directory, manifest)
+                existing = None
+            else:
+                manifest["audio_source_duration"] = max(float(expected), measured)
+                _save_manifest(directory, manifest)
         if existing:
+            discard_audio_resume(directory / f"audio-{AUDIO_POLICY}")
             log_youtube_attempt(
                 provider="cache",
                 video_id=video_id,
@@ -1054,14 +1108,20 @@ def download_audio_for_job(
                 task_id=task_id,
             )
             return existing
-        if not proxy_configured(runtime):
-            raise YouTubeDownloadError("Audio-first download requires YOUTUBE_PROXY_URL")
+        if not sections_enabled(runtime):
+            raise YouTubeDownloadError("Audio-first download requires YOUTUBE_PROXY_URL or YOUTUBE_SECTIONS_DIRECT")
         # Hold the per-video lock through download and manifest publication.
         # Concurrent jobs must not overwrite the same native downloader files.
+        if direct_budget_required(runtime):
+            # Resumable data is local scratch, not published cache state. Give
+            # incomplete audio the local cache TTL before transfer completes.
+            _save_manifest(directory, manifest)
         downloaded = download_audio(
             url, video_id, directory / f"audio-{AUDIO_POLICY}", task_id=task_id, budget=budget,
         )
         manifest["audio"] = downloaded.name
+        if direct:
+            manifest["audio_source_duration"] = youtube_transport.probe_media_duration(downloaded)
         _save_manifest(directory, manifest)
     _persist_named(video_id, downloaded)
     _persist_manifest(video_id, directory)
@@ -1154,7 +1214,7 @@ def _trim_local(source: Path, dest: Path, offset: float, duration: float) -> Non
         "-c:a", "pcm_s16le", "-ar", "48000",
         str(dest),
     ]
-    result = subprocess.run(command, capture_output=True, text=True)
+    result = run_local_process(command, capture_output=True, text=True)
     if result.returncode != 0 or not dest.exists():
         raise YouTubeDownloadError("Could not trim a cached section locally")
 
@@ -1176,7 +1236,7 @@ def _concat_local(files: list[Path], dest: Path, *, durations: Optional[list[flo
         "-c:v", "copy", "-c:a", "aac", "-b:a", "128k",
         str(dest),
     ]
-    result = subprocess.run(command, capture_output=True, text=True)
+    result = run_local_process(command, capture_output=True, text=True)
     listing.unlink(missing_ok=True)
     if result.returncode != 0 or not dest.exists():
         raise YouTubeDownloadError("Could not concatenate cached sections locally")
@@ -1263,8 +1323,8 @@ def materialize_clip_source(
         pieces = _pieces(directory, manifest)
         gaps = missing_intervals([(piece.start, piece.end) for piece in pieces], needed)
 
-        if gaps and not proxy_configured(runtime):
-            raise PartialDownloadUnavailable("Section download requires YOUTUBE_PROXY_URL")
+        if gaps and not sections_enabled(runtime):
+            raise PartialDownloadUnavailable("Section download requires YOUTUBE_PROXY_URL or YOUTUBE_SECTIONS_DIRECT")
 
         # Recheck and fill gaps under the same lock so a waiting job reuses
         # completed files instead of writing to another job's native parts.
@@ -1296,11 +1356,15 @@ def materialize_clip_source(
 
     work = _work_dir(video_id, task_id)
     render_path = work / "render.mp4"
-    time_map = assemble_timeline(deduped, render_path)
-    source_audio = audio_path or _audio_path(directory, _load_manifest(directory, video_id))
-    if source_audio:
-        copy_transcript_sidecar(source_audio, render_path, time_map)
-    return render_path
+    try:
+        time_map = assemble_timeline(deduped, render_path)
+        source_audio = audio_path or _audio_path(directory, _load_manifest(directory, video_id))
+        if source_audio:
+            copy_transcript_sidecar(source_audio, render_path, time_map)
+        return render_path
+    except BaseException:
+        shutil.rmtree(work, ignore_errors=True)
+        raise
 
 
 def cached_full_media(video_id: str, quality: Optional[str] = None) -> Optional[Path]:

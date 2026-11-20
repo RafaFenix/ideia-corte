@@ -303,24 +303,25 @@ class TaskService(ClipEditingMixin):
         media and partials but retains word timings. For uploads we remove the audio sidecar
         generated for transcription — the original upload is owned elsewhere.
         """
-        if not video_path:
-            return
-
         if source_type == "youtube":
             try:
                 video_id = extract_video_id(url)
                 if video_id:
-                    try:
-                        MediaStorage().save_youtube_metadata(
-                            video_id, transcript_source_for(video_id, video_path)
-                        )
-                    except Exception:
-                        logger.exception("Could not back up YouTube word timings")
+                    if video_path:
+                        try:
+                            MediaStorage().save_youtube_metadata(
+                                video_id, transcript_source_for(video_id, video_path)
+                            )
+                        except Exception:
+                            logger.exception("Could not back up YouTube word timings")
                     cleanup_downloaded_files(video_id, source_path=video_path)
                     logger.info("Cleaned up YouTube source artifacts for %s", video_id)
                     return
             except Exception as e:
                 logger.warning("Failed YouTube source cleanup: %s", e)
+
+        if not video_path:
+            return
 
         if source_type in {"twitch", "kick"}:
             try:
@@ -596,6 +597,11 @@ class TaskService(ClipEditingMixin):
             )
 
             async def save_checkpoint(patch: Dict[str, Any]) -> None:
+                if source_type == "youtube" and patch.get("verified_source_duration_seconds"):
+                    await check_cancelled()
+                    await self.task_repo.record_verified_source_duration(
+                        self.db, task_id, patch["verified_source_duration_seconds"],
+                    )
                 await self.checkpoint_repo.save(self.db, task_id, input_key, patch)
                 checkpoint.update(patch)
 

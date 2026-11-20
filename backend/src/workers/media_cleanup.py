@@ -202,6 +202,8 @@ def orphan_candidates(storage: MediaStorage):
 
 def local_orphan_candidates(storage: MediaStorage):
     """Old files on this machine's disk. Sidecars follow their video."""
+    from ..youtube_artifacts import is_youtube_partial
+
     cutoff = time.time() - storage.config.media_orphan_grace_seconds
     root = Path(storage.config.temp_dir)
     for folder in ("uploads", "clips", "exports"):
@@ -214,7 +216,7 @@ def local_orphan_candidates(storage: MediaStorage):
         for path in entries(root):
             if modified(path) >= cutoff:
                 continue
-            if path.is_file() and re.fullmatch(r"[A-Za-z0-9_-]{11}\.(?:mp4|webm|mkv|m4a|transcription\.mp3|assemblyai\.mp3|part)", path.name):
+            if path.is_file() and (is_youtube_partial(path.name) or re.fullmatch(r"[A-Za-z0-9_-]{11}\.(?:mp4|webm|mkv|m4a|transcription\.mp3|assemblyai\.mp3|part)", path.name)):
                 yield str(path), False
             # Reclaim interrupted staging directories, including legacy providers.
             elif path.is_dir() and path.name.startswith(("proxy-", "apify-", "rapidapi-", "oxy-", "videoscale-", "ytdl-")):

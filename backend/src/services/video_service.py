@@ -4,6 +4,7 @@ Video service - handles video processing business logic.
 
 import asyncio
 import copy
+import hashlib
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Callable, Awaitable
 import logging
@@ -34,7 +35,7 @@ from ..youtube_proxy import (
     PartialDownloadUnavailable,
     YouTubeAgeRestrictedError,
     YouTubeGeoRestrictedError,
-    proxy_configured,
+    sections_enabled,
     public_download_error,
 )
 from ..youtube_source import (
@@ -115,6 +116,21 @@ from ..stream_source import (
 logger = logging.getLogger(__name__)
 UPLOAD_URL_PREFIX = "upload://"
 OPENING_CONTEXT_SECONDS = 10.0
+
+
+def _audio_transcript_proof(seconds: int, transcript: str) -> dict:
+    return {"version": 1, "source_duration_seconds": seconds,
+            "transcript_sha256": hashlib.sha256(transcript.encode()).hexdigest()}
+
+
+def _write_verified_transcript(path: Path, data: dict) -> None:
+    sidecar = path.with_suffix(".transcript_cache.json")
+    temporary = sidecar.with_name(f".{sidecar.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary.write_text(json.dumps(data))
+        temporary.replace(sidecar)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 async def resolve_upload_for_edit(video_service, url: str) -> Path:
@@ -676,6 +692,7 @@ class VideoService:
         errors: Optional[list] = None,
         progress_callback: Optional[ProgressCallback] = None,
         download_progress: int = 10,
+        should_cancel: Optional[Callable[[], Awaitable[bool]]] = None,
     ) -> Optional[Path]:
         """
         Download YouTube media for rendering.
@@ -738,6 +755,7 @@ class VideoService:
         try:
             video_path = await run_download_in_thread(
                 _resolve, progress_callback=progress_callback, progress=download_progress,
+                should_cancel=should_cancel,
             )
         except DownloadBudgetExceeded:
             logger.error("YouTube download exceeded the per-job byte limit: %s", url)
@@ -1363,6 +1381,8 @@ class VideoService:
         """
         video_path: Optional[Path] = None
         audio_first = False
+        verified_audio_seconds = None
+        audio_proof = None
         checkpoint = dict(checkpoint or {})
 
         async def save_checkpoint(patch: Dict[str, Any]) -> None:
@@ -1392,6 +1412,7 @@ class VideoService:
                 try:
                     video_info = await async_get_youtube_video_info(
                         url, task_id=task_id, budget=job_budget,
+                        should_cancel=should_cancel,
                     )
                 except YouTubeGeoRestrictedError as exc:
                     # A retry already passed admission. Metadata failure must
@@ -1422,9 +1443,9 @@ class VideoService:
                     await run_in_thread(cached_full_media, video_id, download_quality)
                     if video_id else None
                 )
-                # Audio first only when a proxy is configured and we do not
-                # already have the full source cached. Uploads never reach here.
-                if proxy_configured(runtime_config) and video_id and not cached_full:
+                # Both transports share audio, timed sections and the source cache.
+                # A configured proxy takes precedence over direct opt-in.
+                if sections_enabled(runtime_config) and video_id and not cached_full:
                     def _resolve_analysis():
                         def _download_full():
                             return resolve_full_youtube_download(
@@ -1451,6 +1472,7 @@ class VideoService:
                     try:
                         video_path, audio_first = await run_download_in_thread(
                             _resolve_analysis, progress_callback=progress_callback,
+                            should_cancel=should_cancel,
                         )
                     except DownloadBudgetExceeded as exc:
                         raise Exception(str(exc)) from exc
@@ -1459,6 +1481,7 @@ class VideoService:
                     video_path = cached_full or await VideoService.download_video(
                         url, task_id=task_id, quality=download_quality, budget=job_budget,
                         progress_callback=progress_callback,
+                        should_cancel=should_cancel,
                     )
                 video_path = preserve_geo_restriction(video_path, metadata_error)
                 if not video_path:
@@ -1496,7 +1519,26 @@ class VideoService:
                     raise Exception("Video file not found")
 
             # Post-download duration guard (catches cases where preflight info was unavailable)
-            file_duration = VideoService._get_file_duration(video_path)
+            file_duration = (
+                await run_in_thread(VideoService._get_file_duration, video_path)
+                if source_type == "youtube" and job_budget.native_only
+                else VideoService._get_file_duration(video_path)
+            )
+            if source_type == "youtube" and job_budget.native_only and audio_first:
+                # Audio has already passed the metadata/ffprobe completeness
+                # guard. Persist source length before transcription/selection;
+                # preflight providers can disagree on a recorded livestream.
+                measured_seconds = float(file_duration or 0)
+                metadata_seconds = float(source_duration or 0)
+                # Preserve the source's canonical seconds when ffprobe differs
+                # only by codec/container padding. A materially shorter preflight
+                # must not replace the verified complete recording's length.
+                verified_audio_seconds = charged_duration(
+                    metadata_seconds
+                    if metadata_seconds > 0 and abs(metadata_seconds - measured_seconds) <= min(30, metadata_seconds * .02)
+                    else measured_seconds
+                )
+                await save_checkpoint({"verified_source_duration_seconds": verified_audio_seconds})
             if file_duration and file_duration > duration_limit:
                 mins = duration_limit // 60
                 raise Exception(
@@ -1521,6 +1563,33 @@ class VideoService:
 
             if progress_callback:
                 await progress_callback(30, "Generating transcript...", "processing")
+
+            if verified_audio_seconds:
+                # Old text, selections and render positions may all refer to
+                # a silently truncated source. Only reuse paid work whose proof
+                # binds this verified source length to that exact transcript.
+                prior_text = checkpoint.get("transcript")
+                checkpoint_proven = bool(prior_text) and checkpoint.get("youtube_audio_proof") == _audio_transcript_proof(verified_audio_seconds, prior_text)
+                local_data = await run_in_thread(load_cached_transcript_data, video_path) or {}
+                cache_proven = bool(cached_transcript) and local_data.get("youtube_audio_proof") == _audio_transcript_proof(verified_audio_seconds, cached_transcript)
+                if not checkpoint_proven:
+                    await save_checkpoint({
+                        "transcript": None, "transcript_data": None, "youtube_audio_proof": None,
+                        "analysis": None, "candidates": None, "segments": None,
+                        "workflow_final": None, "completed_positions": [],
+                    })
+                if not cache_proven:
+                    cached_transcript = None
+                if not checkpoint_proven and not cache_proven:
+                    await run_in_thread(video_path.with_suffix(".transcript_cache.json").unlink, missing_ok=True)
+                selected_text = checkpoint.get("transcript") or cached_transcript
+                expected_proof = _audio_transcript_proof(verified_audio_seconds, selected_text) if selected_text else None
+                try:
+                    cached_proof = json.loads(cached_analysis_json or "{}").get("youtube_audio_proof")
+                except (ValueError, AttributeError):
+                    cached_proof = None
+                if not expected_proof or cached_proof != expected_proof:
+                    cached_analysis_json = None
 
             transcript = checkpoint.get("transcript") or cached_transcript
             transcript_data = checkpoint.get("transcript_data")
@@ -1547,7 +1616,7 @@ class VideoService:
                     processing_mode=processing_mode,
                     source_url=url if source_type == "youtube" else None,
                 )
-                if checkpoint.get("analysis") or checkpoint.get("workflow_final"):
+                if checkpoint.get("analysis") or checkpoint.get("workflow_final") or verified_audio_seconds:
                     # Never combine new word timings with an old clip plan.
                     await save_checkpoint({
                         "analysis": None, "candidates": None, "segments": None, "workflow_final": None,
@@ -1556,9 +1625,17 @@ class VideoService:
 
             # Commit paid work before any subsequent storage, analysis or download
             # can fail. The DB copy also repairs an absent word-timing sidecar.
+            transcript_data = await run_in_thread(load_cached_transcript_data, video_path)
+            proof_patch = {}
+            if verified_audio_seconds:
+                audio_proof = _audio_transcript_proof(verified_audio_seconds, transcript)
+                transcript_data = dict(transcript_data or {}, youtube_audio_proof=audio_proof)
+                await run_in_thread(_write_verified_transcript, video_path, transcript_data)
+                proof_patch["youtube_audio_proof"] = audio_proof
             await save_checkpoint({
                 "transcript": transcript,
-                "transcript_data": await run_in_thread(load_cached_transcript_data, video_path),
+                "transcript_data": transcript_data,
+                **proof_patch,
             })
 
             # Preserve paid word timings before any analysis/cancellation path.
@@ -1666,6 +1743,7 @@ class VideoService:
                             task_id=task_id, budget=job_budget, duration=file_duration,
                             audio_path=audio_path, quality=download_quality,
                             progress_callback=progress_callback, progress=65,
+                            should_cancel=should_cancel,
                         )
                 except DownloadBudgetExceeded as exc:
                     raise Exception(str(exc)) from exc
@@ -1694,6 +1772,7 @@ class VideoService:
                             url, task_id=task_id, quality=download_quality, budget=job_budget,
                             skip_proxy=not isinstance(section_error, PartialDownloadUnavailable),
                             progress_callback=progress_callback, download_progress=65,
+                            should_cancel=should_cancel,
                         )
                         video_path = preserve_geo_restriction(video_path, section_error)
                     if video_path and audio_path:
@@ -1752,6 +1831,10 @@ class VideoService:
                         "key_topics": workflow_result.key_topics,
                         "analysis_json": workflow_result.to_cache_json(),
                     }
+                    if audio_proof:
+                        payload = json.loads(workflow_final["analysis_json"])
+                        payload["youtube_audio_proof"] = audio_proof
+                        workflow_final["analysis_json"] = json.dumps(payload)
                     # Frozen for retries: finished parts stay valid only against these exact cuts.
                     await save_checkpoint({"workflow_final": workflow_final})
                 return {
@@ -1784,12 +1867,13 @@ class VideoService:
                         if relevant_parts
                         else [],
                         "most_relevant_segments": segments_json,
+                        **({"youtube_audio_proof": audio_proof} if audio_proof else {}),
                     }
                 ),
             }
 
         except (Exception, asyncio.CancelledError) as e:
-            if source_type == "youtube" and video_path is not None:
+            if source_type == "youtube":
                 video_id = get_youtube_video_id(url)
                 if video_id:
                     try:

@@ -24,6 +24,26 @@ class TaskRepository:
     """Repository for task-related database operations."""
 
     @staticmethod
+    async def record_verified_source_duration(db: AsyncSession, task_id: str, duration: float) -> None:
+        """Correct this active task and its existing minute charge together.
+
+        Preserve refund/creation dates: verification is neither a new admission
+        nor permission to reactivate a cancelled task's charge.
+        """
+        seconds = charged_duration(duration)
+        await db.execute(text("""
+            WITH verified_task AS (
+                UPDATE tasks SET source_duration_seconds = :seconds, updated_at = CURRENT_TIMESTAMP
+                WHERE id = :task_id AND status = 'processing'
+                RETURNING id, user_id
+            )
+            UPDATE minute_usage_events AS usage
+            SET source_duration_seconds = :seconds, minutes = :minutes
+            FROM verified_task t WHERE usage.task_id = t.id AND usage.user_id = t.user_id
+        """), {"task_id": task_id, "seconds": seconds, "minutes": (seconds + 59) // 60})
+        await commit_unless_editing(db)
+
+    @staticmethod
     async def create_task(
         db: AsyncSession,
         user_id: str,

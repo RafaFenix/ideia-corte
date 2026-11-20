@@ -16,9 +16,9 @@ The HLS retry does not pass a format string such as `bestaudio[protocol^=m3u8]`.
 
 Long selections are requested in windows of up to 60 seconds of source video. Each window is saved as soon as it completes, including any extra frames in the final source fragment. A retry reuses those saved windows.
 
-Audio and individual windows retry a transient timeout or proxy connection failure once with fresh metadata and a new session. An audio retry has a 60-second deadline. For a window, 60 seconds without new media bytes triggers recovery. A window that keeps receiving bytes may use the time remaining in that provider's overall allowance for the window (six minutes by default), including on the retry. All attempts count against the same job byte allowance.
+Audio and individual windows retry a transient timeout or proxy connection failure once with fresh metadata and a new session. Through the proxy, an audio retry has a 60-second deadline. Direct audio uses the idle timeout described below. For a window, 60 seconds without new media bytes triggers recovery. A window that keeps receiving bytes may use the time remaining in that provider's overall allowance for the window (six minutes by default), including on the retry. All attempts count against the same job byte allowance.
 
-Uploads and non-YouTube download paths are unchanged. Without a proxy, YouTube jobs still download a full file, now capped at 1080p, and that file is cached too.
+Uploads and non-YouTube download paths are unchanged. Without a proxy and with `YOUTUBE_SECTIONS_DIRECT=false` (the default), YouTube jobs still download a full file, capped at 1080p, and that file is cached too.
 
 Section bytes go through yt-dlp's HTTP client. ffmpeg only trims and muxes local files. `--download-sections` is not used: ffmpeg does not route SOCKS proxies and does not reliably send authenticated HTTP proxy credentials, so the media would leave from the server IP.
 
@@ -46,6 +46,120 @@ Proxy attempts and API Router default to 300 seconds each (`YOUTUBE_PROXY_TIMEOU
 The backend migration `20261103_0001_task_processing_checkpoints.sql` adds task-private JSON checkpoints for transcript text and original word timings, AI analysis, selected segments, and completed plan positions. Each paid stage is saved before downstream downloads or rendering. A missing local transcript sidecar is restored from the checkpoint. Clip creation and its completed-position checkpoint commit together. Checkpoints are removed when their task is deleted. Existing tasks without checkpoints retain their clips, but cannot recover previously unsaved transcription or analysis results.
 
 Source, processing mode, clip length, or transcription configuration changes invalidate the checkpoint; style changes do not. User edits to clip order do not change completed plan positions. The legacy `/resume` API path and MCP tool name remain compatible.
+
+## Direct audio and sections (opt-in)
+
+Set `YOUTUBE_SECTIONS_DIRECT=true` on the worker to use the same audio-first,
+HLS/timed-fragment section pipeline without a proxy. `YOUTUBE_PROXY_URL` takes
+precedence whenever configured; enabling this flag changes nothing in that path.
+Direct mode uses the same `youtube-cache/<video_id>/`, original-audio selection,
+padding, timeline mapping, and remote cache publication as the proxy transport.
+Metadata and media use yt-dlp's native client with the proxy explicitly disabled.
+`--download-sections` is never used.
+
+Recorded livestream audio can expose DASH fragments as a yt-dlp `LazyList`.
+Direct mode passes those fragments to the native downloader under the same
+byte limit. Section selection also accepts lazy fragment lists when they carry
+real timings; lists without timings still use bounded full-file recovery.
+
+The shared `YOUTUBE_DOWNLOAD_MAX_BYTES` allowance (default 2 GB) covers audio,
+playlist bytes, selected sections and full-file recovery, including failed
+attempts. Reusing the cache adds no downloaded media bytes. For sources that
+cannot be sliced (ongoing lives, incomplete or encrypted playlists), full-file
+recovery accepts only native HTTP(S) formats so byte hooks can stop the transfer
+and delete partial files. Ongoing lives fail before a full transfer; sources
+without safe formats fail with a clear message. Direct opt-in does not enter
+API Router, Apify or the legacy unbounded yt-dlp fallback. A limit of `0` disables
+the byte cap, as on the proxy path; keep a positive limit for bounded disk use.
+
+Direct audio uses `YOUTUBE_PROXY_TIMEOUT_SECONDS` as a no-new-data timeout
+(default 300 seconds), rather than a total transfer deadline. Incoming native
+response bytes advance that clock, including during HLS recovery. A progressing
+audio transfer can therefore run longer than five minutes; the shared byte cap,
+cancellation and the worker's independent three-hour job deadline still apply.
+Proxy attempts and direct video-section deadlines retain their existing limits.
+Direct mode cannot bypass YouTube IP/bot restrictions. Test a short public video in an
+isolated worker first, then the long source only through audio and transcription.
+Record `youtube_bytes` (provider `yt_dlp`, kinds `audio` / `section` / `full`) and
+free disk before and after. Use a dedicated QA database, Redis and media volumes;
+never run this canary against the user's database. Keep the byte cap below
+available disk space.
+
+Direct audio transport retries preserve yt-dlp's `.part`/`.ytdl` checkpoints in
+format-specific local staging, re-extract metadata for fresh signed URLs, and
+resume HTTP ranges or completed HLS/DASH fragments when supported. Format,
+language, duration and HLS timeline identity must match before reuse. Existing
+bytes are not charged again; newly transferred bytes and retry metadata share
+the same job allowance. After exhausted transient retries, compatible partials
+remain available on that worker's disk for a later retry, under the source-cache
+TTL. They are scratch, never cross-machine state or published cache assets.
+Completion, cancellation, byte-limit failure and nontransient errors clear this
+staging. Files already removed by an earlier version cannot be recovered.
+
+Direct audio must pass ffprobe duration verification before a success is logged
+or its cache entry is published. The difference from metadata must be no more
+than **both 2% and 30 seconds**. Missing/unreadable durations fail verification.
+HLS playlists with supplied fragment timings must also cover the full source.
+A completed but short file is discarded and retried with fresh metadata under
+the same byte allowance; it is never transcribed or treated as success. Cached
+audio from earlier versions is checked before reuse as well.
+
+Before reusing an HLS checkpoint, the duration in its `.part` must agree with
+the prefix implied by the `.ytdl` fragment index. Compatible checkpoints may
+come from another task for the same video. Inconsistent pairs are discarded
+before yt-dlp can skip fragments. Diagnostic logs record the rendition,
+playlist fragment count and duration, and expected versus probed audio duration.
+An old partial in the canonical cache path is not adopted by the newer hidden,
+format-specific resume directory. The previously reported incident cannot be
+attributed to a checkpoint, playlist or rendition from transfer-byte logs alone.
+
+Before transcription, the active task's `source_duration_seconds` and existing
+minute charge are reconciled with the verified source duration. Refund and
+charge dates are retained; completed/cancelled tasks are not changed by this
+verification. Existing completed tasks are not repaired automatically.
+Direct-audio transcript sidecars, processing checkpoints and cached selections
+carry completeness proof binding source seconds to the transcript's SHA-256.
+Old text, selections, workflow plans and completed render positions without
+that proof are invalidated before reuse. Regenerated word timings and proof are
+saved to the database checkpoint and media sidecar, so another worker can resume
+through the database/bucket without depending on shared scratch files.
+
+An audio timeout does not start full-timeline recovery when compatible audio can
+be resumed, when the full source is estimated above the remaining byte allowance
+(including bitrate/duration estimates), or when no safe estimate is available.
+The task fails clearly and asks for an audio retry or file upload. A small known
+full source can still use recovery when there is no partial audio to resume.
+
+For long recordings, direct HLS playlists may grow from 4 MB to 2 MB per
+started source hour, capped at 64 MB. They are read in blocks of at most 64 KiB,
+charging the job budget as bytes arrive. A small remaining allowance stops the
+playlist read immediately, before any full-file recovery. The requirement for
+a bounded native fallback is retained on the job's budget even if trial routing
+changes during recovery. An explicitly configured proxy still takes precedence.
+When the selected full-file formats already report an exact combined size above
+the remaining allowance, recovery is rejected before transferring their media.
+Native HTTP response bodies, including yt-dlp metadata and manifests, are metered
+before buffering or writing. A progress hook cannot disable the limit, and media
+already charged by the reader is not counted again by the hook. Exhaustion stops
+the native read after at most one extra byte and prevents another provider retry.
+
+## Cancellation and partial files
+
+YouTube yt-dlp downloads poll the task's cancellation flag during every download
+stage. Cancelling signals the reader, kills only subprocess groups owned by that
+download (including ffmpeg recovery/remuxing), and waits for the writer to stop
+before cleaning files. Cancellable connections have a five-second setup timeout;
+direct audio reads use the configured idle timeout and cancellation shuts down
+their registered sockets immediately. Other reads retain a five-second timeout.
+Cancelling the worker's awaiting coroutine uses the same shutdown path.
+This applies with `YOUTUBE_SECTIONS_DIRECT` enabled or disabled.
+
+New legacy downloads use private `ytdl-<video_id>-.../` staging directories.
+Failures and cancellation remove these directories without deleting another
+job's files. Cleanup also removes old per-video `.part`, `.part-FragN`, `.ytdl`
+and `.ytdl.tmp` files from the root of `TEMP_DIR`, even when no source path was
+returned. The worker's orphan sweep recognizes these older files after its
+normal grace period. Reusable transcript JSON and cached audio/sections are kept.
 
 ## Bandwidth
 

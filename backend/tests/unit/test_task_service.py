@@ -236,6 +236,21 @@ async def test_process_task_fails_when_no_clip_segments_are_selected():
 
 
 @pytest.mark.asyncio
+async def test_verified_youtube_length_updates_task_and_existing_minute_charge():
+    service = build_task_service()
+    service.task_repo.record_verified_source_duration = AsyncMock()
+    result = service.video_service.process_video_complete.return_value
+
+    async def process(**kwargs):
+        await kwargs["checkpoint_callback"]({"verified_source_duration_seconds": 37864})
+        return result
+
+    service.video_service.process_video_complete.side_effect = process
+    await service.process_task(task_id="task-1", url="https://youtube.com/watch?v=demo", source_type="youtube")
+    service.task_repo.record_verified_source_duration.assert_awaited_once_with(service.db, "task-1", 37864)
+
+
+@pytest.mark.asyncio
 async def test_process_task_uses_scale_youtube_duration_allowance(monkeypatch):
     service = build_task_service()
     service.config.max_video_duration = 5400

@@ -22,6 +22,8 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..download_cancellation import run_local_process
+
 logger = logging.getLogger(__name__)
 
 MAX_LONG_EDGE = 1920
@@ -171,7 +173,7 @@ def _sample_aspect(value: str | None) -> float:
 
 def probe_video_geometry(path: Path) -> VideoGeometry | None:
     try:
-        result = subprocess.run(
+        result = run_local_process(
             [
                 "ffprobe", "-v", "error",
                 "-select_streams", "v:0",
@@ -234,7 +236,7 @@ def source_within_output_limits(path: Path) -> bool:
 
 def _has_audio(path: Path) -> bool:
     try:
-        result = subprocess.run(
+        result = run_local_process(
             [
                 "ffprobe", "-v", "error",
                 "-select_streams", "a:0",
@@ -253,7 +255,7 @@ def _has_audio(path: Path) -> bool:
 
 def _format_name(path: Path) -> str | None:
     try:
-        result = subprocess.run(
+        result = run_local_process(
             ["ffprobe", "-v", "error", "-show_entries", "format=format_name", "-of", "csv=p=0", str(path)],
             capture_output=True, text=True, timeout=60,
         )
@@ -272,7 +274,7 @@ def probe_media_duration(path: Path) -> float | None:
     path = Path(path)
     if _format_name(path) == "aac":
         try:
-            result = subprocess.run(
+            result = run_local_process(
                 ["ffprobe", "-v", "error", "-select_streams", "a:0",
                  "-show_entries", "packet=pts_time,duration_time", "-of", "csv=p=0", str(path)],
                 capture_output=True, text=True, timeout=300,
@@ -282,7 +284,7 @@ def probe_media_duration(path: Path) -> float | None:
         except (OSError, subprocess.TimeoutExpired, IndexError, ValueError):
             pass
     try:
-        result = subprocess.run(
+        result = run_local_process(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(path)],
             capture_output=True, text=True, timeout=60, check=True,
         )
@@ -396,7 +398,7 @@ def build_normalization_command(
 
 def _run_ffmpeg(command: list[str]) -> bool:
     try:
-        result = subprocess.run(
+        result = run_local_process(
             command,
             capture_output=True,
             text=True,
