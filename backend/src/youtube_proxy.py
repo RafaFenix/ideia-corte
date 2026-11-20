@@ -177,8 +177,11 @@ def _proxy_client(options: dict):
     from yt_dlp.networking import Request
 
     _check_deadline(options)
+    counter = options.get("_youtube_byte_budget")
+    if counter:
+        counter.check()
     with managed_ytdlp_client(options) as client:
-        if "_youtube_deadline" in options:
+        if "_youtube_deadline" in options or counter is not None:
             original_open = client.urlopen
 
             def bounded_open(request):
@@ -187,11 +190,64 @@ def _proxy_client(options: dict):
                     request = Request(request)
                 # Bound each socket operation by the remaining attempt time.
                 request.extensions["timeout"] = min(20.0, remaining)
-                return original_open(request)
+                response = original_open(request)
+                return _BudgetResponse(response, counter, options["_youtube_accounting"]) if counter else response
 
             client.urlopen = bounded_open
-        yield client
+        try:
+            yield client
+        except Exception:
+            if counter:
+                counter.check()
+            raise
         _check_deadline(options)
+
+
+class _BudgetResponse:
+    """Meter native response bodies before yt-dlp can write or buffer them."""
+
+    def __init__(self, response, budget, accounting):
+        self.response, self._youtube_budget, self.accounting = response, budget, accounting
+        self._closed = False
+
+    def __getattr__(self, name):
+        return getattr(self.response, name)
+
+    def read(self, size=-1):
+        try:
+            self._youtube_budget.check()
+            if size is None or size < 0:
+                chunks = []
+                while chunk := self.read(65_536):
+                    chunks.append(chunk)
+                return b"".join(chunks)
+            remaining = self._youtube_budget.limit - self._youtube_budget.snapshot()
+            amount = min(size, 65_536, max(1, remaining + 1)) if self._youtube_budget.limit else min(size, 65_536)
+            data = self.response.read(amount)
+            self.accounting["raw"] = True
+            self._youtube_budget.add(len(data))
+            return data
+        except BaseException:
+            self.close()
+            raise
+
+    read1 = read
+
+    def readinto(self, buffer):
+        data = self.read(len(buffer))
+        buffer[:len(data)] = data
+        return len(data)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+    def close(self):
+        if not self._closed:
+            self._closed = True
+            self.response.close()
 
 
 class ByteBudget:
@@ -220,6 +276,13 @@ class ByteBudget:
     def snapshot(self) -> int:
         with self._lock:
             return self.total
+
+    def check(self) -> None:
+        with self._lock:
+            if self.limit and self.total > self.limit:
+                raise DownloadBudgetExceeded(
+                    f"YouTube download exceeded the {self.limit} byte job limit ({self.total} bytes)"
+                )
 
     def proxy_route(self, task_id: Optional[str], video_id: str) -> Optional[tuple[str, str]]:
         with self._lock:
@@ -444,7 +507,7 @@ def base_proxy_params(task_id: Optional[str] = None, video_id: Optional[str] = N
     return params
 
 
-def _progress_hook(budget: ByteBudget, seen: dict[str, int]) -> Callable[[dict], bool]:
+def _progress_hook(budget: ByteBudget, seen: dict[str, int], accounting=None) -> Callable[[dict], bool]:
     def hook(status: dict) -> bool:
         check_download_cancelled()
         if status.get("status") not in {"downloading", "finished"}:
@@ -457,7 +520,8 @@ def _progress_hook(budget: ByteBudget, seen: dict[str, int]) -> Callable[[dict],
         previous = seen.get(filename, 0)
         if downloaded > previous:
             seen[filename] = downloaded
-            budget.add(downloaded - previous)
+            if not accounting or not accounting.get("raw"):
+                budget.add(downloaded - previous)
             return True
         return False
 
@@ -475,7 +539,7 @@ def download_options(
 ) -> dict[str, Any]:
     """Options for a native yt-dlp download. Never sets ``download_ranges``."""
     options = base_proxy_params(task_id, video_id, session_id=session_id, country=country)
-    if direct_sections_enabled():
+    if budget.native_only or direct_sections_enabled():
         # Bound overshoot to one small native read; no concurrent fragment writes.
         options.update({"concurrent_fragment_downloads": 1, "buffersize": 64 * 1024,
                         "noresizebuffer": True, "retries": 0, "fragment_retries": 0})
@@ -483,7 +547,11 @@ def download_options(
         30, getattr(get_config(), "youtube_proxy_timeout_seconds", 300)
     )
     observed = seen if seen is not None else {}
-    count_bytes = _progress_hook(budget, observed)
+    accounting = {"raw": False} if budget.native_only else None
+    if accounting is not None:
+        options["_youtube_byte_budget"] = budget
+        options["_youtube_accounting"] = accounting
+    count_bytes = _progress_hook(budget, observed, accounting)
     options["_youtube_count_bytes"] = count_bytes
     options["_youtube_seen_bytes"] = observed
 
@@ -555,6 +623,7 @@ def _with_proxy_retry(operation: Callable, *, task_id: Optional[str], video_id: 
             budget.remember_proxy_route(task_id, video_id, country, session)
         )
         try:
+            budget.check()
             _check_deadline(options)
             result = operation(options)
             budget.remember_proxy_route(task_id, video_id, country, session)
@@ -564,6 +633,7 @@ def _with_proxy_retry(operation: Callable, *, task_id: Optional[str], video_id: 
             raise
         except Exception as exc:
             cleanup()
+            budget.check()
             if isinstance(exc, DownloadBudgetExceeded):
                 raise
             is_geo = is_geo_restricted_error(exc)
@@ -1090,7 +1160,8 @@ def expand_hls_format(fmt: dict, options: dict, budget: ByteBudget, duration: fl
                         chunk = response.read(min(65_536, limit + 1 - size, max(1, remaining + 1)))
                         if not chunk:
                             break
-                        budget.add(len(chunk))
+                        if getattr(response, "_youtube_budget", None) is not budget:
+                            budget.add(len(chunk))
                         chunks.append(chunk)
                         size += len(chunk)
                     payload = b"".join(chunks)

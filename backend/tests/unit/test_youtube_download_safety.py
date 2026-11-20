@@ -34,6 +34,7 @@ def test_large_playlist_audio_failure_cannot_escape_to_unbounded_full(direct, na
         )
     assert [call[0] for call in calls] == ["full"]
     assert "[protocol=https]" in calls[0][1]["format"]
+    assert calls[0][1]["concurrent_fragment_downloads"] == 1
     assert budget.snapshot() == 16
     assert not list(Path(direct.temp_dir).glob("proxy-*"))
 
@@ -377,3 +378,43 @@ def test_known_oversized_full_fallback_is_rejected_before_media(direct, native, 
         youtube.download_youtube_video(URL, budget=budget)
     assert budget.snapshot() == 100
     assert not list(tmp_path.glob("proxy-*"))
+
+
+@pytest.mark.asyncio
+async def test_native_full_reader_enforces_budget_even_without_progress_hooks(direct, slow_youtube, monkeypatch, tmp_path):
+    import asyncio
+    import yt_dlp
+    from yt_dlp.networking import Request
+    from src.download_progress import run_download_in_thread
+    _, ended, _ = slow_youtube
+    budget = proxy.ByteBudget(128_000)
+    def download(self, urls):
+        info = self.extract_info(URL, download=False)
+        template = self.params["outtmpl"]
+        if isinstance(template, dict):
+            template = template["default"]
+        path = Path(template.replace("%(ext)s", "mp4") + ".part")
+        with self.urlopen(Request(info["url"])) as response, path.open("wb") as output:
+            while chunk := response.read(16_384):
+                output.write(chunk)
+        pytest.fail("Reader must stop the stream without needing progress hooks")
+    monkeypatch.setattr(yt_dlp.YoutubeDL, "download", download)
+    with pytest.raises(proxy.DownloadBudgetExceeded):
+        await run_download_in_thread(youtube.download_youtube_video, URL, budget=budget)
+    assert budget.snapshot() == budget.limit + 1
+    assert await asyncio.to_thread(ended.wait, 2)
+    assert not list(tmp_path.rglob("*.part*"))
+    assert not list(tmp_path.glob("proxy-*"))
+
+
+def test_metadata_budget_failure_does_not_try_another_provider(direct, monkeypatch):
+    budget = proxy.ByteBudget(100)
+    def metadata(*args, **kwargs):
+        budget.add(101)
+    api = Mock(side_effect=AssertionError("Budget exhaustion must not recover with another metadata provider"))
+    direct.youtube_metadata_provider = "yt_dlp"
+    monkeypatch.setattr(youtube, "_fetch_video_info_with_ytdlp", metadata)
+    monkeypatch.setattr(youtube, "_fetch_video_info_with_youtube_data_api", api)
+    with pytest.raises(proxy.DownloadBudgetExceeded):
+        youtube.get_youtube_video_info(URL, budget=budget)
+    api.assert_not_called()

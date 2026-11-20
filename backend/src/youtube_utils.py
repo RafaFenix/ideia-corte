@@ -343,8 +343,11 @@ def _fetch_video_info_with_ytdlp(
         )
     else:
         ydl_opts = _build_info_options(task_id)
-        if deadline is not None:
-            ydl_opts["_youtube_deadline"] = deadline
+        if budget is not None and budget.native_only:
+            ydl_opts.update({"_youtube_byte_budget": budget, "_youtube_accounting": {"raw": False}})
+        if deadline is not None or (budget is not None and budget.native_only):
+            if deadline is not None:
+                ydl_opts["_youtube_deadline"] = deadline
             info = extract_video_info(url, ydl_opts)
         else:
             with managed_ytdlp_client(ydl_opts) as ydl:
@@ -471,6 +474,8 @@ def get_youtube_video_info(
         return None
 
     config = get_config()
+    if budget is None and direct_budget_required(config):
+        budget = ByteBudget(config.youtube_download_max_bytes)
     primary_provider = config.youtube_metadata_provider
     secondary_provider = (
         YOUTUBE_METADATA_PROVIDER_DATA_API
@@ -529,6 +534,8 @@ def get_youtube_video_info(
                     provider,
                 )
             return video_info
+        except DownloadBudgetExceeded:
+            raise
         except Exception as exc:
             last_error = exc
             if is_geo_restricted_error(exc):

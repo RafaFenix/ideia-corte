@@ -404,7 +404,7 @@ def test_real_native_dash_audio_uses_lazy_fragments_and_shared_budget(direct, mo
             with pytest.raises(transport.DownloadBudgetExceeded, match="20 byte job limit"):
                 download()
             assert requests == ["/init", "/first"]
-            assert budget.snapshot() == 25
+            assert budget.snapshot() == budget.limit + 1
             assert not list(tmp_path.rglob("*.part*"))
             assert not list(tmp_path.rglob("audio-original-v2.*"))
     finally:

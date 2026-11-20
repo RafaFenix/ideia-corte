@@ -88,6 +88,10 @@ a bounded native fallback is retained on the job's budget even if trial routing
 changes during recovery. An explicitly configured proxy still takes precedence.
 When the selected full-file formats already report an exact combined size above
 the remaining allowance, recovery is rejected before transferring their media.
+Native HTTP response bodies, including yt-dlp metadata and manifests, are metered
+before buffering or writing. A progress hook cannot disable the limit, and media
+already charged by the reader is not counted again by the hook. Exhaustion stops
+the native read after at most one extra byte and prevents another provider retry.
 
 ## Cancellation and partial files
 
