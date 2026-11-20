@@ -39,7 +39,7 @@ def pipeline(tmp_path, monkeypatch):
     ))
     monkeypatch.setattr(module, "async_get_youtube_video_info", AsyncMock(return_value={"duration": 120}))
     monkeypatch.setattr(module, "cached_full_media", lambda *_: None)
-    monkeypatch.setattr(module, "proxy_configured", lambda *_: True)
+    monkeypatch.setattr(module, "sections_enabled", lambda *_: True)
     monkeypatch.setattr(module, "download_analysis_source", lambda *a, **kw: (source, True))
     monkeypatch.setattr(module, "cleanup_downloaded_files", lambda *a, **kw: None)
     monkeypatch.setattr(module, "persist_cache_sidecar", lambda *_: None)
