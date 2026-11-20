@@ -86,6 +86,8 @@ charging the job budget as bytes arrive. A small remaining allowance stops the
 playlist read immediately, before any full-file recovery. The requirement for
 a bounded native fallback is retained on the job's budget even if trial routing
 changes during recovery. An explicitly configured proxy still takes precedence.
+When the selected full-file formats already report an exact combined size above
+the remaining allowance, recovery is rejected before transferring their media.
 
 ## Cancellation and partial files
 

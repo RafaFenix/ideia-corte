@@ -361,3 +361,19 @@ def test_cancelling_local_section_assembly_removes_owned_work_but_keeps_cache(di
     # Completed reusable sections are independent of the interrupted timeline.
     manifest = json.loads((tmp_path / "youtube-cache" / VIDEO_ID / "manifest.json").read_text())
     assert len(manifest["ranges"]) == 1
+
+
+def test_known_oversized_full_fallback_is_rejected_before_media(direct, native, monkeypatch, tmp_path):
+    _, ydl = native
+    budget = proxy.ByteBudget(1000)
+    budget.add(100)
+    def download(self, urls):
+        self.options["match_filter"]({"requested_formats": [
+            {"filesize": 11_460_000_000}, {"filesize": None},
+        ]})
+        pytest.fail("Known oversized source must not start transferring media")
+    monkeypatch.setattr(ydl, "download", download)
+    with pytest.raises(proxy.DownloadBudgetExceeded, match="remaining 900 byte job limit"):
+        youtube.download_youtube_video(URL, budget=budget)
+    assert budget.snapshot() == 100
+    assert not list(tmp_path.glob("proxy-*"))

@@ -1643,11 +1643,24 @@ def download_full_with_proxy(
             stem = Path(directory) / video_id
 
             def metadata_available(_info, *, incomplete=False):
-                if direct_sections_enabled() and (_info.get("is_live") or _info.get("live_status") == "is_live"):
+                if (counter.native_only or direct_sections_enabled()) and (_info.get("is_live") or _info.get("live_status") == "is_live"):
                     raise YouTubeDownloadError(
                         "Direct YouTube download cannot safely bound an ongoing live stream. "
                         "Wait for it to finish or upload a video file."
                     )
+                if counter.native_only and counter.limit:
+                    selected = _info.get("requested_formats") or [_info]
+                    # Exact component sizes are a lower bound, even when the
+                    # size of another track is unknown. Do not spend 2 GB on a
+                    # fallback already known to require an 11 GB source.
+                    known_bytes = sum(int(fmt.get("filesize") or 0) for fmt in selected)
+                    remaining = max(0, counter.limit - counter.snapshot())
+                    if known_bytes > remaining:
+                        raise DownloadBudgetExceeded(
+                            f"YouTube full-video fallback requires at least {known_bytes} bytes, "
+                            f"exceeding the remaining {remaining} byte job limit. "
+                            "Upload the video file or use an audio/sections source."
+                        )
                 if not incomplete:
                     _metadata_ready(options)
                 return None
